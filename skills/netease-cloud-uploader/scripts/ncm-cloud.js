@@ -13,6 +13,7 @@ const rawRequest = require('@neteasecloudmusicapienhanced/api/util/request')
 const createOption = require('@neteasecloudmusicapienhanced/api/util/option')
 const { cookieToJson } = require('@neteasecloudmusicapienhanced/api/util')
 const { mergeCookieHeaders } = require('./cookie-jar')
+const { sanitizeDiagnosticText } = require('./diagnostics')
 
 console.error = (...values) => {
   const message = values.map((value) => {
@@ -343,6 +344,7 @@ async function login() {
       from: 'webview2',
       to: 'electron',
       reason: nativeResult.reason,
+      ...(nativeResult.diagnostic ? { diagnostic: nativeResult.diagnostic } : {}),
     })
   } else {
     emit('login_fallback', {
@@ -381,9 +383,14 @@ function runNativeWebViewLogin() {
     12: 'The official login page failed to load in WebView2',
     13: 'WebView2 could not read or encrypt the authenticated session',
   }
+  const diagnostic = sanitizeDiagnosticText([
+    result.error?.message,
+    result.stderr,
+  ].filter(Boolean).join('\n'))
   return {
     status: result.status,
     reason: result.error?.message || reasons[result.status] || `WebView2 helper exited with code ${result.status ?? 'unknown'}`,
+    ...(diagnostic ? { diagnostic } : {}),
   }
 }
 
@@ -413,7 +420,16 @@ function ensureElectronRuntime() {
     maxBuffer: 8 * 1024 * 1024,
   })
   if (result.status !== 0 || !fs.existsSync(executable)) {
-    throw new Error(`Electron fallback download failed (exit ${result.status ?? 'unknown'})`)
+    const diagnostic = sanitizeDiagnosticText([
+      result.error?.message,
+      result.stderr,
+      result.stdout,
+    ].filter(Boolean).join('\n'))
+    emit('electron_runtime_download_failed', {
+      exitCode: result.status,
+      ...(diagnostic ? { diagnostic } : {}),
+    })
+    throw new Error(`Electron fallback download failed (exit ${result.status ?? 'unknown'})${diagnostic ? `: ${diagnostic}` : ''}`)
   }
   emit('electron_runtime_ready', { version: electronVersion, executable })
 }
