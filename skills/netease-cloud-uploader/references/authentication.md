@@ -26,7 +26,7 @@
 | `runtime\electron-44.3.0` | WebView2 不可用时才下载的便携 Electron |
 | `electron-profile` | Electron 独立浏览器配置 |
 
-不得把 Cookie、手机号、短信验证码、密码或 DPAPI 解密后的内容写入 stdout、stderr、恢复文件、测试快照或回复。`logout` 会先尝试使远端会话失效，再把本地密文改名归档；排障时不要在备份前直接删除凭证文件。
+不得把 Cookie、手机号、短信验证码、密码或 DPAPI 解密后的内容写入 stdout、stderr、恢复文件、测试快照或回复。`logout` 会先尝试使远端会话失效，再把本地密文、`webview2-profile` 和 `electron-profile` 分别改名归档；只归档 `session.dpapi` 会让浏览器 Cookie 在下次登录时立即恢复会话，因此不能视为完全退出。排障时不要在备份前直接删除这些状态。
 
 ## WebView2 帮助程序退出码
 

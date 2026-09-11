@@ -25,7 +25,7 @@ powershell -ExecutionPolicy Bypass -File scripts/bootstrap.ps1
 
 需要诊断时运行 `login-runtime-status`；该命令不打开窗口，也不下载 Electron。`login-qr` 和 `login-client-qr` 仅作为旧接口诊断命令，不是默认登录路径。旧二维码命令产生 `qr_ready.path` 时，将该绝对路径作为图片显示给用户并继续等待扫码确认。不要替用户扫描、输入密码或转移登录凭据。
 
-只有用户明确要求退出当前 Skill 会话时才运行 `logout`。它会尝试让远端会话失效，并将本地 DPAPI 凭证改名归档，以便验证确实进入未登录状态。
+只有用户明确要求退出当前 Skill 会话时才运行 `logout`。它会尝试让远端会话失效，并将本地 DPAPI 凭证、WebView2 配置和 Electron 登录配置改名归档。只有活动凭证及两种浏览器配置均已移出原路径，才能报告完全退出。
 
 不得一开始就要求用户提供 Cookie。只有 WebView2 和 Electron 官方页面登录均无法建立会话，并已清楚报告自动登录失败原因时，才可以询问用户是否愿意采用手动 Cookie 导入兜底；用户未明确同意时不得索取或处理 Cookie。
 
