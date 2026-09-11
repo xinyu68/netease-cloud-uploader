@@ -7,8 +7,8 @@
 1. `status` 先验证已保存会话；会话有效时不打开登录窗口
 2. Windows 上的 `login` 启动随 Skill 打包的 WebView2 原生帮助程序，打开网易云官方登录页
 3. 用户在官方页面自行扫码、短信或密码登录；帮助程序只读取登录成功后该页面产生的 Cookie
-4. 捕获到 `MUSIC_U` 后，以 Windows DPAPI `CurrentUser` 加密保存 Cookie
-5. 帮助程序成功退出后，Node 进程必须再调用 `login/status` 做服务端验证；不能仅凭本地出现 Cookie 就报告登录成功
+4. 捕获到 `MUSIC_U` 后，以 Windows DPAPI `CurrentUser` 加密保存 Cookie，并立即自动关闭登录窗口；成功路径不得显示需要用户确认的模态提示框
+5. 帮助程序成功退出后，Node 进程通过带三次重试的 `login/status` 做服务端验证；不能仅凭本地出现 Cookie 就报告登录成功
 6. 仅当 WebView2 Runtime 不存在、初始化失败或主页面加载失败时，才按需下载固定版本 Electron 并用相同的官方页面流程重试
 
 用户主动关闭窗口属于取消操作，不是 WebView2 故障，不得因此下载 Electron。Electron 不在 Skill 安装阶段下载，也不写入 `PATH` 或其他系统环境变量。
