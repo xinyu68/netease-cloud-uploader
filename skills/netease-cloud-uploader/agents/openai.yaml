@@ -1,0 +1,4 @@
+interface:
+  display_name: "网易云音乐云盘"
+  short_description: "上传本地音乐到网易云云盘，并检查、选择和纠正曲库匹配结果"
+  default_prompt: "Use $netease-cloud-uploader to upload a local audio file to my NetEase Cloud Music drive and verify or correct its catalog match."

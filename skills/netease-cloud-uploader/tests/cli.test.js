@@ -1,0 +1,72 @@
+const assert = require('node:assert/strict')
+const path = require('node:path')
+const { spawnSync } = require('node:child_process')
+const test = require('node:test')
+const { mergeCookieHeaders } = require('../scripts/cookie-jar')
+
+const projectRoot = path.resolve(__dirname, '..')
+const cliPath = path.join(projectRoot, 'scripts', 'ncm-cloud.js')
+
+function run(args) {
+  return spawnSync(process.execPath, [cliPath, ...args], {
+    cwd: projectRoot,
+    encoding: 'utf8',
+    windowsHide: true,
+  })
+}
+
+function parseSingleEnvelope(result) {
+  const stdout = result.stdout.trim()
+  assert.ok(stdout, `expected stdout JSON; stderr=${result.stderr}`)
+  return JSON.parse(stdout)
+}
+
+test('help returns a versioned JSON command schema', () => {
+  const result = run(['help'])
+  assert.equal(result.status, 0)
+  const envelope = parseSingleEnvelope(result)
+  assert.equal(envelope.ok, true)
+  assert.equal(envelope.meta.schema_version, '1.0.0')
+  assert.ok(envelope.data.commands['match-set'])
+})
+
+test('schema progressively discloses one command', () => {
+  const result = run(['schema', 'catalog-search'])
+  assert.equal(result.status, 0)
+  const envelope = parseSingleEnvelope(result)
+  assert.deepEqual(Object.keys(envelope.data.commands), ['catalog-search'])
+})
+
+test('login runtime status is read-only and does not install Electron', () => {
+  const result = run(['login-runtime-status'])
+  assert.equal(result.status, 0)
+  const envelope = parseSingleEnvelope(result)
+  assert.equal(envelope.ok, true)
+  assert.equal(envelope.data.nativeEngine, 'webview2')
+  assert.equal(envelope.data.nativeHelperPackaged, true)
+  assert.equal(typeof envelope.data.electronFallbackCached, 'boolean')
+})
+
+test('mutations require explicit confirmation', () => {
+  const result = run(['match-set', '3435156672', '1973665667'])
+  assert.equal(result.status, 3)
+  const envelope = parseSingleEnvelope(result)
+  assert.equal(envelope.ok, false)
+  assert.equal(envelope.error.code, 'confirmation_required')
+})
+
+test('dry-run does not require authentication or mutate remote state', () => {
+  const result = run(['match-set', '3435156672', '1973665667', '--dry-run'])
+  assert.equal(result.status, 0)
+  const envelope = parseSingleEnvelope(result)
+  assert.equal(envelope.ok, true)
+  assert.equal(envelope.data.dryRun, true)
+})
+
+test('web QR cookie context is merged without Set-Cookie attributes', () => {
+  const cookie = mergeCookieHeaders(
+    ['NMTID=initial; Path=/; HttpOnly', '_ntes_nuid=device; Path=/'],
+    'NMTID=updated; MUSIC_U=session-token; Max-Age=100; Path=/',
+  )
+  assert.equal(cookie, 'NMTID=updated; _ntes_nuid=device; MUSIC_U=session-token')
+})
