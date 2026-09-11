@@ -37,6 +37,8 @@ const legacyStateDir = path.join(
 )
 const credentialPath = path.join(stateDir, 'session.dpapi')
 const legacyCredentialPath = path.join(legacyStateDir, 'session.dpapi')
+const webViewProfileDir = path.join(stateDir, 'webview2-profile')
+const electronProfileDir = path.join(stateDir, 'electron-profile')
 const qrPath = path.join(stateDir, 'login-qr.png')
 const nativeWebViewExecutable = path.join(__dirname, 'native', 'windows-x64', 'NeteaseWebViewLogin.exe')
 const electronLoginScript = path.join(__dirname, 'electron-login.js')
@@ -512,11 +514,32 @@ async function logout() {
     fs.renameSync(sourcePath, backupPath)
     credentialBackups.push(backupPath)
   }
+
+  const browserProfileBackups = []
+  const profileArchiveErrors = []
+  for (const sourcePath of [webViewProfileDir, electronProfileDir]) {
+    if (!fs.existsSync(sourcePath)) continue
+    const backupPath = `${sourcePath}.logged-out-${timestamp}.bak`
+    try {
+      fs.renameSync(sourcePath, backupPath)
+      browserProfileBackups.push(backupPath)
+    } catch (error) {
+      profileArchiveErrors.push({ path: sourcePath, message: error.message })
+      emit('logout_profile_archive_failed', { path: sourcePath, message: error.message })
+    }
+  }
+
+  if (profileArchiveErrors.length > 0) {
+    throw new Error(`Logout incomplete: browser login profiles could not be archived: ${profileArchiveErrors.map((item) => item.path).join(', ')}`)
+  }
+
   emit('logged_out', {
     remoteCode,
     remoteError,
     localCredentialsRemoved: credentialBackups.length,
     credentialBackups,
+    browserProfilesRemoved: browserProfileBackups.length,
+    browserProfileBackups,
   })
 }
 

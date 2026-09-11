@@ -1,4 +1,6 @@
 const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const os = require('node:os')
 const path = require('node:path')
 const { spawnSync } = require('node:child_process')
 const test = require('node:test')
@@ -8,11 +10,12 @@ const { sanitizeDiagnosticText } = require('../scripts/diagnostics')
 const projectRoot = path.resolve(__dirname, '..')
 const cliPath = path.join(projectRoot, 'scripts', 'ncm-cloud.js')
 
-function run(args) {
+function run(args, options = {}) {
   return spawnSync(process.execPath, [cliPath, ...args], {
     cwd: projectRoot,
     encoding: 'utf8',
     windowsHide: true,
+    env: { ...process.env, ...options.env },
   })
 }
 
@@ -83,4 +86,30 @@ test('login diagnostics redact credentials and retain useful failure details', (
   assert.equal(diagnostic.includes('private-session'), false)
   assert.equal(diagnostic.includes('private-token'), false)
   assert.match(diagnostic, /ETIMEDOUT/)
+})
+
+test('logout archives browser profiles so the next login starts clean', () => {
+  const localAppData = fs.mkdtempSync(path.join(os.tmpdir(), 'ncm-logout-test-'))
+  const stateDir = path.join(localAppData, 'netease-cloud-uploader')
+  const webViewProfile = path.join(stateDir, 'webview2-profile')
+  const electronProfile = path.join(stateDir, 'electron-profile')
+  try {
+    fs.mkdirSync(webViewProfile, { recursive: true })
+    fs.mkdirSync(electronProfile, { recursive: true })
+    fs.writeFileSync(path.join(webViewProfile, 'cookie-state'), 'test-only')
+    fs.writeFileSync(path.join(electronProfile, 'cookie-state'), 'test-only')
+
+    const result = run(['logout'], { env: { LOCALAPPDATA: localAppData } })
+    assert.equal(result.status, 0)
+    const envelope = parseSingleEnvelope(result)
+    assert.equal(envelope.ok, true)
+    assert.equal(envelope.data.browserProfilesRemoved, 2)
+    assert.equal(fs.existsSync(webViewProfile), false)
+    assert.equal(fs.existsSync(electronProfile), false)
+    for (const backupPath of envelope.data.browserProfileBackups) {
+      assert.equal(fs.existsSync(backupPath), true)
+    }
+  } finally {
+    fs.rmSync(localAppData, { recursive: true, force: true })
+  }
 })
