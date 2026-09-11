@@ -163,7 +163,6 @@ namespace NeteaseCloudUploader
                 credentialSaved = true;
                 ExitCode = 0;
                 cookieTimer.Stop();
-                MessageBox.Show(this, "登录成功，登录态已加密保存", "网易云音乐登录", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 Close();
             }
             catch
