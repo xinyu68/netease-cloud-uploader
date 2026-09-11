@@ -35,7 +35,7 @@
 | `0` | 已读取并加密保存登录态 | 否；继续做服务端验证 |
 | `10` | WebView2 Runtime 不可用或初始化失败 | 是 |
 | `11` | 用户关闭登录窗口 | 否 |
-| `12` | 网易云官方主页面加载失败 | 是 |
+| `12` | 忽略导航取消并自动重试后，用户选择切换备用登录 | 是 |
 | `13` | Cookie 读取或 DPAPI 加密保存失败 | 否；先排查权限和本地状态 |
 
 退出码语义同时受 `scripts/native/windows/WebViewLogin.cs` 与 `scripts/ncm-cloud.js` 约束，修改任一处时必须同步另一处和本文。
@@ -56,6 +56,8 @@ node scripts/ncm-cloud.js status
 3. 帮助程序返回成功后仍以 `login/status` 为准；服务端未确认就不得继续上传
 4. 验证 WebView2 失败码确实属于 `10` 或 `12`，再检查 Electron 是否被按需下载
 5. 不得在用户关闭窗口或 Cookie 保存失败时自动切换引擎，以免掩盖真实问题
+
+WebView2 的 `OperationCanceled` 常由重定向或前端路由替换旧导航引起，不得当成页面加载失败。其他导航错误先自动重试两次，仍失败时在窗口内显示 `WebErrorStatus`；只有用户在该提示中选择取消，才以退出码 `12` 进入 Electron 兜底。Electron 安装失败时应输出经过脱敏和截断的 npm 错误尾部，禁止只报告笼统的退出码。
 
 旧命令 `login-qr` 和 `login-client-qr` 仅保留作接口诊断，不应恢复为默认登录路径。
 

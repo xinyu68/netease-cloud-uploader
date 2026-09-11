@@ -3,6 +3,7 @@ const path = require('node:path')
 const { spawnSync } = require('node:child_process')
 const test = require('node:test')
 const { mergeCookieHeaders } = require('../scripts/cookie-jar')
+const { sanitizeDiagnosticText } = require('../scripts/diagnostics')
 
 const projectRoot = path.resolve(__dirname, '..')
 const cliPath = path.join(projectRoot, 'scripts', 'ncm-cloud.js')
@@ -69,4 +70,17 @@ test('web QR cookie context is merged without Set-Cookie attributes', () => {
     'NMTID=updated; MUSIC_U=session-token; Max-Age=100; Path=/',
   )
   assert.equal(cookie, 'NMTID=updated; _ntes_nuid=device; MUSIC_U=session-token')
+})
+
+test('login diagnostics redact credentials and retain useful failure details', () => {
+  const diagnostic = sanitizeDiagnosticText([
+    'request https://user:secret@example.test/download failed',
+    'MUSIC_U=private-session; token=private-token',
+    'npm ERR! connect ETIMEDOUT 203.0.113.1:443',
+  ].join('\n'))
+
+  assert.equal(diagnostic.includes('secret'), false)
+  assert.equal(diagnostic.includes('private-session'), false)
+  assert.equal(diagnostic.includes('private-token'), false)
+  assert.match(diagnostic, /ETIMEDOUT/)
 })

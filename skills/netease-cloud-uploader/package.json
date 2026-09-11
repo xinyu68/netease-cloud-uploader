@@ -1,6 +1,6 @@
 {
   "name": "netease-cloud-uploader-skill",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Codex skill runtime for uploading local audio to NetEase Cloud Music and correcting catalog matches",
   "license": "UNLICENSED",
@@ -10,7 +10,7 @@
   "scripts": {
     "cli": "node scripts/ncm-cloud.js",
     "test": "node --test tests/*.test.js",
-    "check": "node --check scripts/ncm-cloud.js && node --check scripts/cookie-jar.js && node --check scripts/electron-login.js"
+    "check": "node --check scripts/ncm-cloud.js && node --check scripts/cookie-jar.js && node --check scripts/diagnostics.js && node --check scripts/electron-login.js"
   },
   "dependencies": {
     "@neteasecloudmusicapienhanced/api": "github:NeteaseCloudMusicApiEnhanced/api-enhanced#b7bf2b527c5c0b2e67515f1573a4aa40f3b556fa",
