@@ -28,6 +28,21 @@
 
 不得把 Cookie、手机号、短信验证码、密码或 DPAPI 解密后的内容写入 stdout、stderr、恢复文件、测试快照或回复。`logout` 会先尝试使远端会话失效，再把本地密文、`webview2-profile` 和 `electron-profile` 分别改名归档；只归档 `session.dpapi` 会让浏览器 Cookie 在下次登录时立即恢复会话，因此不能视为完全退出。排障时不要在备份前直接删除这些状态。
 
+## 强制退出与回查
+
+用户明确要求强制或彻底退出时：
+
+1. 终止进程名为 `NeteaseWebViewLogin` 的专用登录帮助程序
+2. 仅终止命令行包含 `%LOCALAPPDATA%\netease-cloud-uploader\webview2-profile` 或 `electron-profile` 的 `msedgewebview2.exe`/`electron.exe` 子进程；禁止按进程名结束所有 WebView2 或 Electron 实例
+3. 运行 `node scripts/ncm-cloud.js logout`，确认远端结果，并确认活动凭证和浏览器配置已被归档
+4. 运行 `node scripts/ncm-cloud.js status`，结果必须为 `auth_required`
+5. 检查以下三个活动路径均不存在：
+   - `%LOCALAPPDATA%\netease-cloud-uploader\session.dpapi`
+   - `%LOCALAPPDATA%\netease-cloud-uploader\webview2-profile`
+   - `%LOCALAPPDATA%\netease-cloud-uploader\electron-profile`
+
+远端注销暂时失败时，仍要清理本地活动状态，但必须报告远端失败。任一浏览器配置无法归档，或者回查仍显示已登录，都属于退出不完整。归档目录用于故障恢复，不得在用户未要求永久清除时删除。
+
 ## WebView2 帮助程序退出码
 
 | 退出码 | 含义 | 是否允许 Electron 兜底 |

@@ -27,6 +27,8 @@ powershell -ExecutionPolicy Bypass -File scripts/bootstrap.ps1
 
 只有用户明确要求退出当前 Skill 会话时才运行 `logout`。它会尝试让远端会话失效，并将本地 DPAPI 凭证、WebView2 配置和 Electron 登录配置改名归档。只有活动凭证及两种浏览器配置均已移出原路径，才能报告完全退出。
 
+用户要求“强制退出”或“彻底退出”时，先终止 `NeteaseWebViewLogin`，以及命令行明确包含本 Skill 的 `webview2-profile` 或 `electron-profile` 路径的浏览器子进程；不得结束其他 WebView2 或 Electron 应用。随后运行 `logout`，再运行 `status`，并检查 `session.dpapi`、`webview2-profile`、`electron-profile` 三个活动路径均不存在。任一检查失败都应报告退出不完整，不得报告成功。具体命令和回查项见 [references/authentication.md](references/authentication.md)。
+
 不得一开始就要求用户提供 Cookie。只有 WebView2 和 Electron 官方页面登录均无法建立会话，并已清楚报告自动登录失败原因时，才可以询问用户是否愿意采用手动 Cookie 导入兜底；用户未明确同意时不得索取或处理 Cookie。
 
 ## 维护与诊断
