@@ -74,16 +74,35 @@ node scripts/ncm-cloud.js status
 
 WebView2 的 `OperationCanceled` 常由重定向或前端路由替换旧导航引起，不得当成页面加载失败。其他导航错误先自动重试两次，仍失败时在窗口内显示 `WebErrorStatus`；只有用户在该提示中选择取消，才以退出码 `12` 进入 Electron 兜底。Electron 安装失败时应输出经过脱敏和截断的 npm 错误尾部，禁止只报告笼统的退出码。
 
-旧命令 `login-qr` 和 `login-client-qr` 仅保留作接口诊断，不应恢复为默认登录路径。
+旧二维码命令 `login-qr` 与 `login-client-qr` 已移除：其 Web/客户端二维码接口被网易风控拦截（状态 `8821`），Windows 与 macOS 均无法完成扫码登录，不再保留。
 
 ## 已验证现象
 
-- 官方登录页在 WebView2 内能够完成登录，随后 `login/status` 能确认会话
-- 纯 Web 二维码曾在扫码确认后从状态 `802` 转为接口错误 `8821`
-- 客户端二维码实验未观察到扫码状态，最终过期
+- 官方登录页在 WebView2（Windows）与 Electron（Windows/macOS）内均能完成登录，随后 `login/status` 能确认会话
+- 纯 Web 二维码曾在扫码确认后从状态 `802` 转为接口错误 `8821`；客户端二维码未观察到扫码状态，最终过期。据此判断二维码接口已被网易风控彻底拦截，故移除 `login-qr` / `login-client-qr`，登录统一走浏览器窗口（WebView2/Electron）
 - 短信接口能够发送并校验验证码，但最终登录曾返回 `10004` 风控错误
 
 这些现象只解释当前架构选择，不是网易接口的永久保证。短信登录不能作为当前生产兜底；接口行为变化时应重新做最小验证。
+
+## macOS 支持
+
+macOS 上未打包 WebView2 原生帮助程序（Windows 专属），`login` 走 Electron 兜底；凭证无 DPAPI，退化为 0o600 权限的 base64 文件。代码改动：
+
+- `scripts/ncm-cloud.js` 的 `runDpapi()`：非 win32 平台以 base64 存取 Cookie（不再抛异常），Windows 仍走 DPAPI。
+- `login()`：非 win32 或 `NCM_LOGIN_FORCE_ELECTRON=1` 时直接走 `ensureElectronRuntime()` + `runElectronLogin()`，不再因平台拦截。
+- `scripts/electron-login.js` 的 `protectWithDpapi()`：非 win32 同样 base64 回退。
+
+Electron 二进制（`electron@44.3.0`）首装需要下载；国内网络下 npm 的 GitHub 直连 fetch 会失败。此时改用 npmmirror 手动拉取（arch 取 `arm64`/`x64`，本机 `uname -m` 决定）：
+
+```bash
+cd <stateDir>/runtime/electron-44.3.0/node_modules/electron
+curl -sL -o electron.zip "https://registry.npmmirror.com/-/binary/electron/44.3.0/electron-v44.3.0-darwin-arm64.zip"
+unzip -q -o electron.zip -d dist && rm electron.zip
+echo "Electron.app/Contents/MacOS/Electron" > path.txt
+node -e 'console.log(require("./index.js"))'   # 应打印 .../dist/Electron.app/Contents/MacOS/Electron
+```
+
+完成后 `node scripts/ncm-cloud.js login-runtime-status` 的 `electronFallbackCached` 应为 `true`。凭证与浏览器配置存于 `~/netease-cloud-uploader/`（macOS 无 `LOCALAPPDATA`，`stateDir` 落在用户主目录）。若担心 base64 明文存储，可改用手动 Cookie 导入兜底。
 
 ## 重建 Windows 帮助程序
 
