@@ -19,11 +19,13 @@ powershell -ExecutionPolicy Bypass -File scripts/bootstrap.ps1
 
 ## 鉴权
 
-先运行 `node scripts/ncm-cloud.js status`。登录态由 Windows DPAPI 加密，脚本和回复中不得打印 Cookie。
+先运行 `node scripts/ncm-cloud.js status`。Windows 上登录态由 DPAPI 加密保存；macOS 及其他平台无 DPAPI，退化为 0o600 权限的 base64 文件，仅同一 OS 用户可读。脚本和回复中不得打印 Cookie。
 
-只有在用户要求登录或上传任务确实需要重新登录时，才运行 `login`。默认登录先实际启动系统 WebView2 并打开网易云官方登录页；仅当 WebView2 缺失、初始化失败或主页面加载失败时，才按需下载固定版本的便携 Electron 到用户本地状态目录并自动重试。Electron 不在 Skill 安装阶段下载，不修改 `PATH` 或其他系统环境变量。用户主动关闭登录窗口时停止，不得将其解释为引擎故障并下载 Electron。
+只有在用户要求登录或上传任务确实需要重新登录时，才运行 `login`。Windows 上默认登录先实际启动系统 WebView2 并打开网易云官方登录页；仅当 WebView2 缺失、初始化失败或主页面加载失败时，才按需下载固定版本的便携 Electron 到用户本地状态目录并自动重试。macOS 上未打包 WebView2 原生帮助程序，`login` 直接走 Electron 兜底：弹出 Electron 窗口打开网易云官方登录页，用户扫码或密码登录后保存会话。Electron 不在 Skill 安装阶段下载，不修改 `PATH` 或其他系统环境变量。用户主动关闭登录窗口时停止，不得将其解释为引擎故障并下载 Electron。国内网络下 Electron 二进制首装可能拉取失败，可用 npmmirror 手动下载（见 [references/authentication.md](references/authentication.md) 的 macOS 支持小节）。
 
-需要诊断时运行 `login-runtime-status`；该命令不打开窗口，也不下载 Electron。`login-qr` 和 `login-client-qr` 仅作为旧接口诊断命令，不是默认登录路径。旧二维码命令产生 `qr_ready.path` 时，将该绝对路径作为图片显示给用户并继续等待扫码确认。不要替用户扫描、输入密码或转移登录凭据。
+需要诊断时运行 `login-runtime-status`；该命令不打开窗口，也不下载 Electron。不要替用户扫描、输入密码或转移登录凭据。
+
+> 已废弃：旧 `login-qr` / `login-client-qr` 二维码接口被网易风控拦截（状态 8821），Windows 与 macOS 均不可用，已从本 Skill 移除，不要再使用。
 
 只有用户明确要求退出当前 Skill 会话时才运行 `logout`。它会尝试让远端会话失效，并将本地 DPAPI 凭证、WebView2 配置和 Electron 登录配置改名归档。只有活动凭证及两种浏览器配置均已移出原路径，才能报告完全退出。
 

@@ -16,6 +16,11 @@ app.setName('NeteaseCloudUploaderLogin')
 app.setPath('userData', path.join(stateDir, 'electron-profile'))
 
 function protectWithDpapi(value) {
+  if (process.platform !== 'win32') {
+    // macOS has no DPAPI; store base64 and rely on 0o600 file permissions
+    // plus the fact that only the same OS user can read it back.
+    return Buffer.from(value, 'utf8').toString('base64')
+  }
   const script = "Add-Type -AssemblyName System.Security;$v=[Console]::In.ReadToEnd();$b=[Text.Encoding]::UTF8.GetBytes($v);$p=[Security.Cryptography.ProtectedData]::Protect($b,$null,[Security.Cryptography.DataProtectionScope]::CurrentUser);[Convert]::ToBase64String($p)"
   const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
     input: value,

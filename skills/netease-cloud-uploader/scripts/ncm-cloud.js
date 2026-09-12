@@ -6,7 +6,6 @@ const path = require('path')
 const crypto = require('crypto')
 const { spawnSync } = require('child_process')
 const { default: axios } = require('axios')
-const qrcode = require('qrcode')
 process.env.DOTENV_CONFIG_QUIET = 'true'
 const api = require('@neteasecloudmusicapienhanced/api')
 const rawRequest = require('@neteasecloudmusicapienhanced/api/util/request')
@@ -39,7 +38,6 @@ const credentialPath = path.join(stateDir, 'session.dpapi')
 const legacyCredentialPath = path.join(legacyStateDir, 'session.dpapi')
 const webViewProfileDir = path.join(stateDir, 'webview2-profile')
 const electronProfileDir = path.join(stateDir, 'electron-profile')
-const qrPath = path.join(stateDir, 'login-qr.png')
 const nativeWebViewExecutable = path.join(__dirname, 'native', 'windows-x64', 'NeteaseWebViewLogin.exe')
 const electronLoginScript = path.join(__dirname, 'electron-login.js')
 const electronVersion = '44.3.0'
@@ -120,11 +118,15 @@ function ensureStateDir() {
 }
 
 function runDpapi(mode, value) {
+  const protect = mode === 'protect'
   if (process.platform !== 'win32') {
-    throw new Error('This skill runtime supports encrypted session storage on Windows only')
+    // macOS and other platforms: no DPAPI. The credential file is written
+    // with 0o600 permissions and only ever read back by the same user.
+    return protect
+      ? Buffer.from(value, 'utf8').toString('base64')
+      : Buffer.from(value, 'base64').toString('utf8')
   }
 
-  const protect = mode === 'protect'
   const script = protect
     ? "Add-Type -AssemblyName System.Security;$v=[Console]::In.ReadToEnd();$b=[Text.Encoding]::UTF8.GetBytes($v);$p=[Security.Cryptography.ProtectedData]::Protect($b,$null,[Security.Cryptography.DataProtectionScope]::CurrentUser);[Convert]::ToBase64String($p)"
     : "Add-Type -AssemblyName System.Security;$v=[Console]::In.ReadToEnd();$b=[Convert]::FromBase64String($v);$p=[Security.Cryptography.ProtectedData]::Unprotect($b,$null,[Security.Cryptography.DataProtectionScope]::CurrentUser);[Text.Encoding]::UTF8.GetString($p)"
@@ -138,14 +140,6 @@ function runDpapi(mode, value) {
     throw new Error(`DPAPI ${mode} failed: ${String(result.stderr).trim()}`)
   }
   return result.stdout.trim()
-}
-
-function saveCookie(cookie) {
-  ensureStateDir()
-  fs.writeFileSync(credentialPath, runDpapi('protect', cookie), {
-    encoding: 'utf8',
-    mode: 0o600,
-  })
 }
 
 function loadCookie() {
@@ -201,125 +195,6 @@ async function verifyCookie(cookie) {
   return { response, profile }
 }
 
-async function qrLogin(platform = 'web') {
-  ensureStateDir()
-
-  const savedCookie = loadCookie()
-  if (savedCookie) {
-    try {
-      const { profile } = await verifyCookie(savedCookie)
-      if (profile?.userId) {
-        emit('already_logged_in', {
-          nickname: profile.nickname,
-          userId: profile.userId,
-        })
-        return
-      }
-    } catch (_) {
-      // Continue with a fresh QR login.
-    }
-  }
-
-  const keyResponse = await withRetry(() => api.login_qr_key({
-    platform,
-    timestamp: Date.now(),
-  }))
-  const keyBody = responseBody(keyResponse) || {}
-  const key = keyBody.data?.unikey || keyBody.unikey
-  if (!key) {
-    throw new Error(`QR key was not returned: ${JSON.stringify(keyBody)}`)
-  }
-  let qrCookie = mergeCookieHeaders(keyResponse.cookie, keyBody.cookie)
-  if (platform === 'web' && !qrCookie) {
-    throw new Error('Web QR login did not establish its initial browser cookie context')
-  }
-
-  const createResponse = await withRetry(() => api.login_qr_create({
-    key,
-    qrimg: true,
-    platform,
-    ...(qrCookie ? { cookie: qrCookie } : {}),
-  }))
-  const createBody = responseBody(createResponse) || {}
-  qrCookie = mergeCookieHeaders(qrCookie, createResponse.cookie, createBody.cookie)
-  const qrData = createBody.data || {}
-  const qrUrl = qrData.qrurl
-  const chainId = qrData.chainId
-  if (!qrUrl || (platform === 'web' && !chainId)) {
-    throw new Error(`${platform} QR information was not returned: ${JSON.stringify(createBody)}`)
-  }
-  await qrcode.toFile(qrPath, qrUrl, {
-    width: 420,
-    margin: 2,
-    errorCorrectionLevel: 'M',
-  })
-  emit('qr_ready', { path: qrPath, expiresInSeconds: 180, platform })
-
-  const deadline = Date.now() + 180_000
-  let lastCode = null
-  let consecutivePollErrors = 0
-  while (Date.now() < deadline) {
-    let checkResponse
-    try {
-      checkResponse = await api.login_qr_check({
-        key,
-        platform,
-        ...(chainId ? { chainId } : {}),
-        ...(qrCookie ? { cookie: qrCookie } : {}),
-        timestamp: Date.now(),
-      })
-      consecutivePollErrors = 0
-    } catch (error) {
-      consecutivePollErrors += 1
-      emit('qr_poll_retry', {
-        attempt: consecutivePollErrors,
-        message: error.message,
-      })
-      if (consecutivePollErrors >= 5) {
-        throw new Error('QR status polling failed five times in a row')
-      }
-      await sleep(2500)
-      continue
-    }
-    const body = responseBody(checkResponse) || {}
-    qrCookie = mergeCookieHeaders(qrCookie, checkResponse.cookie, body.cookie)
-    const code = Number(body.code)
-
-    if (code !== lastCode) {
-      emit('qr_status', { code, message: body.message || body.msg || '' })
-      lastCode = code
-    }
-
-    if (code === 803) {
-      const cookie = qrCookie
-      if (!cookieToJson(cookie).MUSIC_U) {
-        throw new Error('QR login succeeded but the authenticated MUSIC_U cookie was not returned')
-      }
-
-      const { profile } = await verifyCookie(cookie)
-      if (!profile?.userId) {
-        throw new Error('Login cookie was returned but login/status did not confirm an account')
-      }
-      saveCookie(cookie)
-      emit('login_success', {
-        nickname: profile.nickname,
-        userId: profile.userId,
-        credentialPath,
-        method: `${platform}_qr`,
-      })
-      return
-    }
-    if (platform === 'web' && code === 8821) {
-      const error = new Error('Web QR login requires additional NetEase security verification')
-      error.code = 'web_qr_security_required'
-      throw error
-    }
-    if (code === 800) throw new Error('QR code expired before login completed')
-    await sleep(2500)
-  }
-  throw new Error('QR login timed out')
-}
-
 async function login() {
   const savedCookie = loadCookie()
   if (savedCookie) {
@@ -334,11 +209,15 @@ async function login() {
     }
   }
 
-  if (process.platform !== 'win32') {
-    throw new Error('Native browser login is currently packaged for Windows only')
-  }
-
-  if (process.env.NCM_LOGIN_FORCE_ELECTRON !== '1') {
+  if (process.platform !== 'win32' || process.env.NCM_LOGIN_FORCE_ELECTRON === '1') {
+    emit('login_fallback', {
+      from: process.platform === 'win32' ? 'webview2' : 'none',
+      to: 'electron',
+      reason: process.platform === 'win32'
+        ? 'Electron fallback was explicitly forced for diagnostics'
+        : `Native browser login is not packaged for ${process.platform}; using Electron`,
+    })
+  } else {
     const nativeResult = runNativeWebViewLogin()
     if (nativeResult.status === 0) return finishBrowserLogin('webview2')
     if (nativeResult.status === 11) throw new Error('Login window was closed before authentication completed')
@@ -347,12 +226,6 @@ async function login() {
       to: 'electron',
       reason: nativeResult.reason,
       ...(nativeResult.diagnostic ? { diagnostic: nativeResult.diagnostic } : {}),
-    })
-  } else {
-    emit('login_fallback', {
-      from: 'webview2',
-      to: 'electron',
-      reason: 'Electron fallback was explicitly forced for diagnostics',
     })
   }
 
@@ -1006,8 +879,6 @@ async function main() {
   if (!command || command === 'help' || command === '--help') return commandSchema()
   if (command === 'schema') return commandSchema(argument)
   if (command === 'login') return login()
-  if (command === 'login-qr') return qrLogin()
-  if (command === 'login-client-qr') return qrLogin('pc')
   if (command === 'login-runtime-status') return loginRuntimeStatus()
   if (command === 'status') return status()
   if (command === 'logout') return logout()
@@ -1225,9 +1096,7 @@ async function allowMutation(command, wouldRequest, options) {
 
 function commandSchema(method = '') {
   const commands = {
-    login: { mutation: 'auth', params: [], description: 'Open the official login page in WebView2 and lazily download a portable Electron fallback only when WebView2 is unavailable' },
-    'login-qr': { mutation: 'auth', params: [], description: 'Use only the web QR login path for compatibility' },
-    'login-client-qr': { mutation: 'auth', params: [], description: 'Use the client QR fallback directly after web QR security verification blocks login' },
+    login: { mutation: 'auth', params: [], description: 'Open the official NetEase login page in a browser window (packaged WebView2 helper on Windows, Electron fallback on Windows/macOS and anywhere else) and save the authenticated session' },
     'login-runtime-status': { mutation: 'read', params: [], description: 'Report packaged native helper and cached Electron fallback status without opening a login window' },
     status: { mutation: 'read', params: [], description: 'Check the saved login session' },
     logout: { mutation: 'auth', params: [], description: 'Invalidate the current Skill session and archive its encrypted local credential' },
