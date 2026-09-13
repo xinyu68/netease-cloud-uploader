@@ -39,6 +39,9 @@ const legacyCredentialPath = path.join(legacyStateDir, 'session.dpapi')
 const webViewProfileDir = path.join(stateDir, 'webview2-profile')
 const electronProfileDir = path.join(stateDir, 'electron-profile')
 const nativeWebViewExecutable = path.join(__dirname, 'native', 'windows-x64', 'NeteaseWebViewLogin.exe')
+const nativeMacOSExecutable = process.arch === 'arm64'
+  ? path.join(__dirname, 'native', 'macos-arm64', 'NeteaseWebViewLogin')
+  : path.join(__dirname, 'native', 'macos-x64', 'NeteaseWebViewLogin')
 const electronLoginScript = path.join(__dirname, 'electron-login.js')
 const electronVersion = '44.3.0'
 const electronRuntimeDir = path.join(stateDir, 'runtime', `electron-${electronVersion}`)
@@ -209,20 +212,30 @@ async function login() {
     }
   }
 
-  if (process.platform !== 'win32' || process.env.NCM_LOGIN_FORCE_ELECTRON === '1') {
+  // Native browser login (packaged helper): WebView2 on Windows, WKWebView on macOS.
+  // Electron remains the fallback. On other platforms Electron is used directly.
+  const isWindows = process.platform === 'win32'
+  const isMacOS = process.platform === 'darwin'
+  const nativeExecutable = isWindows ? nativeWebViewExecutable : nativeMacOSExecutable
+  const nativeAvailable = (isWindows || isMacOS) && fs.existsSync(nativeExecutable)
+  const forceElectron = process.env.NCM_LOGIN_FORCE_ELECTRON === '1'
+
+  if (!nativeAvailable || forceElectron) {
     emit('login_fallback', {
-      from: process.platform === 'win32' ? 'webview2' : 'none',
+      from: isWindows ? 'webview2' : isMacOS ? 'wkwebview' : 'none',
       to: 'electron',
-      reason: process.platform === 'win32'
+      reason: forceElectron
         ? 'Electron fallback was explicitly forced for diagnostics'
-        : `Native browser login is not packaged for ${process.platform}; using Electron`,
+        : !isWindows && !isMacOS
+          ? `Native browser login is not packaged for ${process.platform}; using Electron`
+          : `The packaged ${isWindows ? 'WebView2' : 'WKWebView'} login helper is missing; using Electron`,
     })
   } else {
-    const nativeResult = runNativeWebViewLogin()
-    if (nativeResult.status === 0) return finishBrowserLogin('webview2')
+    const nativeResult = isWindows ? runNativeWebViewLogin() : runNativeMacOSLogin()
+    if (nativeResult.status === 0) return finishBrowserLogin(isWindows ? 'webview2' : 'wkwebview')
     if (nativeResult.status === 11) throw new Error('Login window was closed before authentication completed')
     emit('login_fallback', {
-      from: 'webview2',
+      from: isWindows ? 'webview2' : 'wkwebview',
       to: 'electron',
       reason: nativeResult.reason,
       ...(nativeResult.diagnostic ? { diagnostic: nativeResult.diagnostic } : {}),
@@ -265,6 +278,33 @@ function runNativeWebViewLogin() {
   return {
     status: result.status,
     reason: result.error?.message || reasons[result.status] || `WebView2 helper exited with code ${result.status ?? 'unknown'}`,
+    ...(diagnostic ? { diagnostic } : {}),
+  }
+}
+
+function runNativeMacOSLogin() {
+  if (!fs.existsSync(nativeMacOSExecutable)) {
+    return { status: null, reason: 'The packaged WKWebView login helper is missing' }
+  }
+  emit('login_engine_start', { engine: 'wkwebview' })
+  const result = spawnSync(nativeMacOSExecutable, [], {
+    encoding: 'utf8',
+    env: { ...process.env, NCM_STATE_DIR: stateDir },
+    stdio: ['ignore', 'pipe', 'pipe'],
+    maxBuffer: 1024 * 1024,
+  })
+  const reasons = {
+    10: 'WKWebView is unavailable or initialization failed',
+    12: 'The official login page failed to load in WKWebView',
+    13: 'WKWebView could not read or save the authenticated session',
+  }
+  const diagnostic = sanitizeDiagnosticText([
+    result.error?.message,
+    result.stderr,
+  ].filter(Boolean).join('\n'))
+  return {
+    status: result.status,
+    reason: result.error?.message || reasons[result.status] || `WKWebView helper exited with code ${result.status ?? 'unknown'}`,
     ...(diagnostic ? { diagnostic } : {}),
   }
 }
@@ -345,10 +385,13 @@ async function finishBrowserLogin(method) {
 
 function loginRuntimeStatus() {
   const isWindows = process.platform === 'win32'
+  const isMacOS = process.platform === 'darwin'
+  const nativeExecutable = isWindows ? nativeWebViewExecutable : nativeMacOSExecutable
+  const nativeEngine = isWindows ? 'webview2' : isMacOS ? 'wkwebview' : 'unavailable'
   emit('login_runtime_status', {
     platform: process.platform,
-    nativeEngine: isWindows ? 'webview2' : 'unavailable',
-    nativeHelperPackaged: isWindows && fs.existsSync(nativeWebViewExecutable),
+    nativeEngine,
+    nativeHelperPackaged: (isWindows || isMacOS) && fs.existsSync(nativeExecutable),
     electronFallbackVersion: electronVersion,
     electronFallbackCached: fs.existsSync(electronExecutablePath()),
     electronRuntimeDir,
@@ -1105,7 +1148,7 @@ async function allowMutation(command, wouldRequest, options) {
 
 function commandSchema(method = '') {
   const commands = {
-    login: { mutation: 'auth', params: [], description: 'Open the official NetEase login page in a browser window (packaged WebView2 helper on Windows, Electron fallback on Windows/macOS and anywhere else) and save the authenticated session' },
+    login: { mutation: 'auth', params: [], description: 'Open the official NetEase login page in a browser window (packaged WebView2 helper on Windows, packaged WKWebView helper on macOS, Electron fallback on Windows/macOS and anywhere else) and save the authenticated session' },
     'login-runtime-status': { mutation: 'read', params: [], description: 'Report packaged native helper and cached Electron fallback status without opening a login window' },
     status: { mutation: 'read', params: [], description: 'Check the saved login session' },
     logout: { mutation: 'auth', params: [], description: 'Invalidate the current Skill session and archive its encrypted local credential' },
