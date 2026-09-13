@@ -46,7 +46,8 @@ test('login runtime status is read-only and does not install Electron', () => {
   assert.equal(result.status, 0)
   const envelope = parseSingleEnvelope(result)
   assert.equal(envelope.ok, true)
-  assert.equal(envelope.data.nativeEngine, 'webview2')
+  const expectedEngine = process.platform === 'win32' ? 'webview2' : 'wkwebview'
+  assert.equal(envelope.data.nativeEngine, expectedEngine)
   assert.equal(envelope.data.nativeHelperPackaged, true)
   assert.equal(typeof envelope.data.electronFallbackCached, 'boolean')
 })
