@@ -9,11 +9,12 @@ description: 上传本地音频到用户自己的网易云音乐云盘，检查�
 
 ## 准备运行环境
 
-在 Skill 根目录运行命令。若 `node_modules` 不存在，先执行：
+在 Skill 根目录运行命令。若 `node_modules` 不存在，先安装依赖并做语法检查：
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/bootstrap.ps1
-```
+- macOS / Linux：`bash scripts/bootstrap.sh`（安装依赖 + `npm run check`）
+- Windows：`powershell -ExecutionPolicy Bypass -File scripts/bootstrap.ps1`
+
+macOS 上未打包 WebView2 原生登录帮助程序，登录走 Electron 兜底；Electron 二进制在国内网络下首装时默认走 npmmirror 镜像拉取，通常无需手动干预。
 
 所有命令的 stdout 是单个 JSON envelope；进度事件写入 stderr。先用 `node scripts/ncm-cloud.js schema <command>` 查询具体命令契约。
 

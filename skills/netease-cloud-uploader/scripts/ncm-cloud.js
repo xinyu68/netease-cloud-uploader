@@ -281,6 +281,13 @@ function ensureElectronRuntime() {
     message: 'WebView2 is unavailable; downloading the portable Electron fallback',
   })
   const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm'
+  const npmEnv = { ...process.env }
+  if (process.platform !== 'win32' && !npmEnv.ELECTRON_MIRROR) {
+    // electron's postinstall downloads its binary from GitHub, which is
+    // unreliable from mainland-China networks. Default to the npmmirror
+    // binary mirror unless the caller already chose one explicitly.
+    npmEnv.ELECTRON_MIRROR = 'https://registry.npmmirror.com/-/binary/electron/'
+  }
   const result = spawnSync(npmCommand, [
     'install',
     '--prefix', electronRuntimeDir,
@@ -291,6 +298,7 @@ function ensureElectronRuntime() {
     `electron@${electronVersion}`,
   ], {
     encoding: 'utf8',
+    env: npmEnv,
     windowsHide: true,
     maxBuffer: 8 * 1024 * 1024,
   })
@@ -336,10 +344,11 @@ async function finishBrowserLogin(method) {
 }
 
 function loginRuntimeStatus() {
+  const isWindows = process.platform === 'win32'
   emit('login_runtime_status', {
     platform: process.platform,
-    nativeEngine: process.platform === 'win32' ? 'webview2' : 'unavailable',
-    nativeHelperPackaged: fs.existsSync(nativeWebViewExecutable),
+    nativeEngine: isWindows ? 'webview2' : 'unavailable',
+    nativeHelperPackaged: isWindows && fs.existsSync(nativeWebViewExecutable),
     electronFallbackVersion: electronVersion,
     electronFallbackCached: fs.existsSync(electronExecutablePath()),
     electronRuntimeDir,
