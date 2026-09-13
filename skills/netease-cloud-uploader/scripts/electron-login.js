@@ -3,7 +3,7 @@
 const fs = require('fs')
 const path = require('path')
 const { spawnSync } = require('child_process')
-const { app, BrowserWindow, dialog, session } = require('electron')
+const { app, BrowserWindow, session } = require('electron')
 
 const stateDir = process.env.NCM_STATE_DIR
 if (!stateDir) throw new Error('NCM_STATE_DIR is required')
@@ -47,9 +47,12 @@ async function saveAuthenticatedCookies() {
     fs.mkdirSync(stateDir, { recursive: true })
     fs.writeFileSync(credentialPath, protectWithDpapi(cookieHeader), { encoding: 'utf8', mode: 0o600 })
     loginSaved = true
-    await dialog.showMessageBox({ type: 'info', title: '网易云音乐登录', message: '登录成功，登录态已加密保存' })
+    // Match the native WebView2 helper: no modal confirmation on the success
+    // path. Briefly reflect the outcome in the title, then close the window
+    // automatically so the user does not have to click anything.
     windowClosedByApp = true
-    app.exit(0)
+    for (const win of BrowserWindow.getAllWindows()) win.setTitle('登录成功，登录态已保存，正在关闭…')
+    setTimeout(() => app.exit(0), 600)
   } catch {
     windowClosedByApp = true
     app.exit(13)
