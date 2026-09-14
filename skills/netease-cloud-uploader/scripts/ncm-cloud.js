@@ -13,6 +13,7 @@ const createOption = require('@neteasecloudmusicapienhanced/api/util/option')
 const { cookieToJson } = require('@neteasecloudmusicapienhanced/api/util')
 const { mergeCookieHeaders } = require('./cookie-jar')
 const { sanitizeDiagnosticText } = require('./diagnostics')
+const { inspectAudioMetadata } = require('./media-metadata')
 
 console.error = (...values) => {
   const message = values.map((value) => {
@@ -100,7 +101,7 @@ function emit(event, data = {}) {
 function fail(message, details) {
   const text = String(message || details?.message || details?.msg || 'Unknown error')
   const authError = /not logged in|session has expired|login failed/i.test(text)
-  const validationError = /usage:|not a file|safety check failed|missing|required/i.test(text)
+  const validationError = /usage:|not a file|safety check failed|missing|required|metadata conflict/i.test(text)
   const code = authError ? 'auth_required' : validationError ? 'validation_error' : 'runtime_error'
   process.stdout.write(`${JSON.stringify({
     ok: false,
@@ -519,8 +520,7 @@ async function cloudCheckV2(fileArgument, songIdArgument) {
   const cookie = loadCookie()
   if (!cookie) throw new Error('Not logged in. Run: node scripts/ncm-cloud.js login')
   const md5 = await hashFile(filePath)
-  const metadataModule = await import('music-metadata')
-  const metadata = await metadataModule.parseFile(filePath)
+  const { metadata } = await inspectAudioMetadata(filePath)
   const bitrate = Math.round(metadata.format.bitrate || 999000)
   const response = await requestWeapi(
     cookie,
@@ -539,7 +539,7 @@ async function cloudCheckV2(fileArgument, songIdArgument) {
   emit('cloud_check_v2', { file: filePath, response: responseBody(response) })
 }
 
-async function cloudImport(fileArgument, songIdArgument) {
+async function cloudImport(fileArgument, songIdArgument, metadataOverrides = {}) {
   if (!fileArgument || !songIdArgument) {
     throw new Error('Usage: node scripts/ncm-cloud.js cloud-import <audio-file> <netease-song-id>')
   }
@@ -549,15 +549,16 @@ async function cloudImport(fileArgument, songIdArgument) {
   const cookie = loadCookie()
   if (!cookie) throw new Error('Not logged in. Run: node scripts/ncm-cloud.js login')
 
-  const metadataModule = await import('music-metadata')
-  const metadata = await metadataModule.parseFile(filePath)
+  const { metadata, plan } = await inspectAudioMetadata(filePath, metadataOverrides)
   const md5 = await hashFile(filePath)
-  const song = metadata.common.title || path.parse(filePath).name
-  const artist = metadata.common.artist || '未知艺术家'
-  const album = metadata.common.album || '未知专辑'
+  const song = plan.title
+  const artist = plan.artist || '未知艺术家'
+  const album = plan.album || '未知专辑'
+  assertMetadataPlanReady(plan)
   const bitrate = Math.round(metadata.format.bitrate || 999000)
   const fileType = path.extname(filePath).slice(1).toLowerCase() || 'mp3'
 
+  emit('upload_metadata_plan', plan)
   const response = await api.cloud_import({
     cookie,
     md5,
@@ -570,7 +571,19 @@ async function cloudImport(fileArgument, songIdArgument) {
     fileType,
     timestamp: Date.now(),
   })
-  emit('cloud_import', { file: filePath, response: responseBody(response) })
+  const body = responseBody(response) || {}
+  if (![200, 201].includes(Number(body.code))) {
+    throw new Error(`Cloud import failed: ${JSON.stringify(body)}`)
+  }
+  const expectedRecord = { md5, fileSize: stat.size, title: song }
+  const record = await waitForUploadedRecord(cookie, expectedRecord)
+  verifyUploadedRecord(record, expectedRecord)
+  emit('cloud_import', {
+    file: filePath,
+    response: body,
+    record,
+    embeddedMediaFallback: plan.embeddedMediaFallback,
+  })
 }
 
 async function whaleUpload(fileArgument, songIdArgument) {
@@ -779,7 +792,7 @@ async function ncmctlUpload(fileArgument) {
   }
 }
 
-async function upload(fileArgument) {
+async function upload(fileArgument, metadataOverrides = {}) {
   if (!fileArgument) throw new Error('Usage: node scripts/ncm-cloud.js upload <audio-file>')
   const filePath = path.resolve(fileArgument)
   const stat = fs.statSync(filePath)
@@ -798,14 +811,15 @@ async function upload(fileArgument) {
 
   const fileName = path.basename(filePath)
   const md5 = await hashFile(filePath)
-  const metadataModule = await import('music-metadata')
-  const metadata = await metadataModule.parseFile(filePath)
-  const song = metadata.common.title || path.parse(fileName).name
-  const artist = metadata.common.artist || '未知艺术家'
-  const album = metadata.common.album || '未知专辑'
+  const { plan } = await inspectAudioMetadata(filePath, metadataOverrides)
+  const song = plan.title
+  const artist = plan.artist || '未知艺术家'
+  const album = plan.album || '未知专辑'
+  assertMetadataPlanReady(plan)
   const bitrate = 999000
   const ext = path.extname(fileName).toLowerCase() || '.mp3'
 
+  emit('upload_metadata_plan', plan)
   const checkResponse = await withRetry(() => requestWeapi(
     cookie,
     '/api/cloud/upload/check',
@@ -933,10 +947,15 @@ async function upload(fileArgument) {
   if (![200, 201].includes(Number(publishBody.code))) {
     throw new Error(`Cloud publish failed: ${JSON.stringify(publishBody)}`)
   }
+  const expectedRecord = { md5, fileSize: stat.size, title: song }
+  const record = await waitForUploadedRecord(cookie, expectedRecord, songId)
+  verifyUploadedRecord(record, expectedRecord)
   emit('upload_success', {
     file: filePath,
     songId,
     code: publishBody.code,
+    record,
+    embeddedMediaFallback: plan.embeddedMediaFallback,
   })
 }
 
@@ -949,6 +968,7 @@ async function main() {
     yes: flags.has('--yes'),
     dryRun: flags.has('--dry-run'),
   }
+  const metadataOverrides = parseMetadataOverrides(argv)
   if (!command || command === 'help' || command === '--help') return commandSchema()
   if (command === 'schema') return commandSchema(argument)
   if (command === 'login') return login()
@@ -968,12 +988,12 @@ async function main() {
   }
   if (command === 'cloud-check-v2') return cloudCheckV2(argument, secondArgument)
   if (command === 'cloud-import') {
-    if (!await allowMutation('cloud-import', { file: argument, catalogSongId: secondArgument }, mutationOptions)) return
-    return cloudImport(argument, secondArgument)
+    if (!await allowMutation('cloud-import', { file: argument, catalogSongId: secondArgument, metadataOverrides }, mutationOptions)) return
+    return cloudImport(argument, secondArgument, metadataOverrides)
   }
   if (command === 'upload') {
-    if (!await allowMutation('upload', { file: argument }, mutationOptions)) return
-    return upload(argument)
+    if (!await allowMutation('upload', { file: argument, metadataOverrides }, mutationOptions)) return
+    return upload(argument, metadataOverrides)
   }
   throw new Error(`Unknown command: ${command}. Run: node scripts/ncm-cloud.js help`)
 }
@@ -1019,6 +1039,77 @@ function summarizeCloudRecord(item) {
     fileName: item.fileName || privateCloud.fileName || '',
     fileSize: item.fileSize || privateCloud.fileSize || null,
     md5: privateCloud.md5 || null,
+  }
+}
+
+function parseMetadataOverrides(argv) {
+  const values = {}
+  for (const key of ['title', 'artist', 'album']) {
+    const prefix = `--${key}=`
+    const flag = argv.find((value) => value.startsWith(prefix))
+    if (flag) values[key] = flag.slice(prefix.length).trim()
+  }
+  return values
+}
+
+function assertMetadataPlanReady(plan) {
+  if (plan.titleConflict && plan.titleSource !== 'override') {
+    throw new Error(`Metadata conflict: embedded title "${plan.embeddedTitle}" differs from filename title "${plan.filenameTitle}". Confirm the intended title and pass --title=<title>`)
+  }
+}
+
+async function findCloudRecordByMd5(cookie, md5) {
+  const pageSize = 200
+  for (let offset = 0; offset < 2000; offset += pageSize) {
+    const response = await withRetry(() => api.user_cloud({
+      cookie,
+      limit: pageSize,
+      offset,
+      timestamp: Date.now(),
+    }))
+    const body = responseBody(response) || {}
+    const data = body.data || []
+    const match = data.find((item) => summarizeCloudRecord(item).md5 === md5)
+    if (match) return match
+    if (!body.hasMore || data.length < pageSize) break
+  }
+  return null
+}
+
+function uploadedRecordMismatches(record, expected) {
+  const mismatches = []
+  if (record.md5 !== expected.md5) mismatches.push(`MD5 ${record.md5 || 'missing'}`)
+  if (Number(record.fileSize) !== Number(expected.fileSize)) mismatches.push(`size ${record.fileSize || 'missing'}`)
+  if (String(record.songName || '').trim() !== String(expected.title || '').trim()) {
+    mismatches.push(`title "${record.songName || ''}" instead of "${expected.title || ''}"`)
+  }
+  return mismatches
+}
+
+async function waitForUploadedRecord(cookie, expected, cloudSongId = null) {
+  let latest = null
+  for (let attempt = 1; attempt <= 10; attempt += 1) {
+    try {
+      latest = cloudSongId
+        ? await findCloudRecord(cookie, cloudSongId)
+        : await findCloudRecordByMd5(cookie, expected.md5)
+    } catch (_) {
+      latest = await findCloudRecordByMd5(cookie, expected.md5)
+    }
+    if (latest) {
+      const summary = summarizeCloudRecord(latest)
+      if (uploadedRecordMismatches(summary, expected).length === 0) return summary
+    }
+    await sleep(2000)
+  }
+  if (latest) return summarizeCloudRecord(latest)
+  throw new Error(`Cloud write completed but no record appeared for MD5 ${expected.md5}`)
+}
+
+function verifyUploadedRecord(record, expected) {
+  const mismatches = uploadedRecordMismatches(record, expected)
+  if (mismatches.length > 0) {
+    throw new Error(`Cloud write completed but metadata verification failed for pcId ${record.pcId || 'unknown'}: ${mismatches.join(', ')}`)
   }
 }
 
@@ -1178,8 +1269,8 @@ function commandSchema(method = '') {
     'cloud-list': { mutation: 'read', params: ['keyword?'], description: 'List compact personal cloud-drive records' },
     'match-inspect': { mutation: 'read', params: ['cloudRecordId'], description: 'Inspect one cloud record by pcId, original audio ID, or current song ID' },
     'cloud-check-v2': { mutation: 'read', params: ['file', 'catalogSongId?'], description: 'Check whether the file can be imported without binary upload' },
-    'cloud-import': { mutation: 'write', confirmation: '--yes', dryRun: true, params: ['file', 'catalogSongId'], description: 'Import a reusable file and associate it with a catalog song' },
-    upload: { mutation: 'write', confirmation: '--yes', dryRun: true, params: ['file'], description: 'Upload audio bytes, wait for conversion, and publish the cloud record' },
+    'cloud-import': { mutation: 'write', confirmation: '--yes', dryRun: true, params: ['file', 'catalogSongId'], options: ['--title=<title>', '--artist=<artist>', '--album=<album>'], description: 'Import a reusable file, preserve embedded playback metadata, and verify the resulting cloud record' },
+    upload: { mutation: 'write', confirmation: '--yes', dryRun: true, params: ['file'], options: ['--title=<title>', '--artist=<artist>', '--album=<album>'], description: 'Upload audio bytes, preserve embedded playback metadata, and verify the resulting cloud record' },
     'match-set': { mutation: 'write', confirmation: '--yes', dryRun: true, params: ['cloudRecordId', 'catalogSongIdOrUrl'], description: 'Transactionally correct a cloud record association and verify it' },
     unmatch: { mutation: 'write', confirmation: '--yes', dryRun: true, params: ['cloudRecordId'], description: 'Remove the current public-catalog association' },
   }
@@ -1198,8 +1289,7 @@ async function fileInfo(fileArgument) {
   const filePath = path.resolve(fileArgument)
   const stat = fs.statSync(filePath)
   if (!stat.isFile()) throw new Error(`Not a file: ${filePath}`)
-  const metadataModule = await import('music-metadata')
-  const metadata = await metadataModule.parseFile(filePath)
+  const { metadata, plan } = await inspectAudioMetadata(filePath)
   emit('file_info', {
     file: filePath,
     size: stat.size,
@@ -1207,9 +1297,17 @@ async function fileInfo(fileArgument) {
     format: metadata.format.container || path.extname(filePath).slice(1).toLowerCase(),
     bitrate: Math.round(metadata.format.bitrate || 0),
     durationMs: Math.round((metadata.format.duration || 0) * 1000),
-    title: metadata.common.title || path.parse(filePath).name,
-    artist: metadata.common.artist || '',
-    album: metadata.common.album || '',
+    title: plan.title,
+    artist: plan.artist,
+    album: plan.album,
+    embeddedTitle: plan.embeddedTitle,
+    filenameTitle: plan.filenameTitle,
+    titleSource: plan.titleSource,
+    placeholderTitle: plan.placeholderTitle,
+    titleConflict: plan.titleConflict,
+    embeddedCover: plan.embeddedCover,
+    embeddedLyrics: plan.embeddedLyrics,
+    embeddedMediaFallback: plan.embeddedMediaFallback,
   })
 }
 

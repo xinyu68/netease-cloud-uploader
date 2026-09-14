@@ -13,6 +13,7 @@ node scripts/ncm-cloud.js match-inspect <cloudRecordId>
 node scripts/ncm-cloud.js cloud-check-v2 "D:\Music\song.mp3" <catalogId>
 node scripts/ncm-cloud.js upload "D:\Music\song.mp3" --dry-run
 node scripts/ncm-cloud.js upload "D:\Music\song.mp3" --yes
+node scripts/ncm-cloud.js upload "D:\Music\song.mp3" --title="正确标题" --yes
 node scripts/ncm-cloud.js match-set <cloudRecordId> <catalogId> --dry-run
 node scripts/ncm-cloud.js match-set <cloudRecordId> <catalogId> --yes
 node scripts/ncm-cloud.js unmatch <cloudRecordId> --yes
@@ -47,6 +48,10 @@ node scripts/ncm-cloud.js unmatch <cloudRecordId> --yes
 完整上传过程中，云端转换状态 `1` 表示仍在处理，状态 `9` 表示可发布。状态 `9` 不是失败。长时间上传和转换进度以 stderr JSON 事件输出。
 
 `cloud-check-v2` 返回项的 `upload` 值按当前接口解释：`1` 表示可调用 `cloud-import` 导入，`0` 表示相同内容已在用户云盘，应先用 `cloud-list` 找到现有记录并纠正关联，其他值视为不可导入并报告。即使曲库中存在目标歌曲，MD5 不同仍可能需要完整上传。
+
+上传前以 `file-info` 的有效标题为准。内嵌标题是 `track 07`、`unknown track`、`未知曲目` 等占位值时，脚本自动采用文件名推断标题；有意义的标题与文件名冲突时必须先由用户确认，再用 `--title=<标题>` 显式覆盖。上传或导入后按 MD5 定位记录，并校验标题、MD5 和大小。
+
+内嵌封面和歌词可以改善未匹配歌曲的播放体验，但不会产生公开曲库 ID、评论或歌曲主页。若同 MD5 已被网易服务端保存为错误标题，秒传可能继续复用旧元数据；修复需要生成标签正确且 MD5 不同的副本，完整上传并回查成功后，才能在用户授权下删除旧记录。
 
 ## 退出码
 

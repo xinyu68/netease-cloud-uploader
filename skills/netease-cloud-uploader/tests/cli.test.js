@@ -6,6 +6,7 @@ const { spawnSync } = require('node:child_process')
 const test = require('node:test')
 const { mergeCookieHeaders } = require('../scripts/cookie-jar')
 const { sanitizeDiagnosticText } = require('../scripts/diagnostics')
+const { buildMetadataPlan, isPlaceholderTitle } = require('../scripts/media-metadata')
 
 const projectRoot = path.resolve(__dirname, '..')
 const cliPath = path.join(projectRoot, 'scripts', 'ncm-cloud.js')
@@ -59,6 +60,50 @@ test('login runtime status is read-only and does not install Electron', () => {
     assert.equal(envelope.data.nativeHelperPackaged, fs.existsSync(helper))
   }
   assert.equal(typeof envelope.data.electronFallbackCached, 'boolean')
+})
+
+test('generic embedded track titles fall back to the meaningful filename', () => {
+  const plan = buildMetadataPlan(path.join('Music', '爱琴海 - 周杰伦.flac'), {
+    title: 'track 07',
+    artist: '周杰伦',
+    album: '太阳之子',
+  })
+  assert.equal(isPlaceholderTitle('track 07'), true)
+  assert.equal(plan.title, '爱琴海')
+  assert.equal(plan.titleSource, 'filename_placeholder_fallback')
+  assert.equal(plan.placeholderTitle, true)
+})
+
+test('meaningful title conflicts are reported without silently overwriting tags', () => {
+  const plan = buildMetadataPlan(path.join('Music', '文件名歌曲 - 歌手.mp3'), {
+    title: '标签歌曲',
+    artist: '歌手',
+  })
+  assert.equal(plan.title, '标签歌曲')
+  assert.equal(plan.titleConflict, true)
+})
+
+test('embedded cover and timed lyrics form a complete unmatched-playback fallback', () => {
+  const plan = buildMetadataPlan(path.join('Music', '歌曲 - 歌手.mp3'), {
+    title: '歌曲',
+    artist: '歌手',
+    picture: [{ format: 'image/webp', data: Buffer.alloc(12) }],
+    lyrics: [{ text: '[00:01.00]第一句' }],
+  })
+  assert.deepEqual(plan.embeddedCover, {
+    present: true,
+    count: 1,
+    formats: ['image/webp'],
+    bytes: 12,
+  })
+  assert.equal(plan.embeddedLyrics.timed, true)
+  assert.equal(plan.embeddedMediaFallback, 'complete')
+})
+
+test('explicit metadata override wins over embedded and filename titles', () => {
+  const plan = buildMetadataPlan(path.join('Music', 'track 07.flac'), { title: 'track 07' }, { title: '爱琴海' })
+  assert.equal(plan.title, '爱琴海')
+  assert.equal(plan.titleSource, 'override')
 })
 
 test('macOS build script maps Intel architecture to the Node x64 directory', () => {
