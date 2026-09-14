@@ -7,6 +7,7 @@ const test = require('node:test')
 const { mergeCookieHeaders } = require('../scripts/cookie-jar')
 const { sanitizeDiagnosticText } = require('../scripts/diagnostics')
 const { buildMetadataPlan, isPlaceholderTitle } = require('../scripts/media-metadata')
+const { parseFlacBlocks, parseVorbisComment, rewriteFlacTagsBuffer } = require('../scripts/audio-tag-copy')
 
 const projectRoot = path.resolve(__dirname, '..')
 const cliPath = path.join(projectRoot, 'scripts', 'ncm-cloud.js')
@@ -104,6 +105,55 @@ test('explicit metadata override wins over embedded and filename titles', () => 
   const plan = buildMetadataPlan(path.join('Music', 'track 07.flac'), { title: 'track 07' }, { title: '爱琴海' })
   assert.equal(plan.title, '爱琴海')
   assert.equal(plan.titleSource, 'override')
+  assert.equal(plan.metadataRewriteRequired, true)
+})
+
+test('prepared-copy suffix does not create a false title conflict', () => {
+  const plan = buildMetadataPlan(path.join('Music', '西西里 - 周杰伦 (云盘标签修正-deadbeef).flac'), {
+    title: '西西里',
+    artist: '周杰伦',
+    album: '太阳之子',
+  })
+  assert.equal(plan.filenameTitle, '西西里')
+  assert.equal(plan.titleConflict, false)
+  assert.equal(plan.metadataRewriteRequired, false)
+})
+
+test('FLAC tag rewrite preserves picture metadata and audio frames', () => {
+  const field = (value) => {
+    const data = Buffer.from(value, 'utf8')
+    const length = Buffer.alloc(4)
+    length.writeUInt32LE(data.length)
+    return Buffer.concat([length, data])
+  }
+  const vendor = field('test-vendor')
+  const comments = ['TITLE=track 02', 'ARTIST=周杰伦', 'ALBUM=太阳之子', 'LYRICS=[00:01.00]歌词']
+  const count = Buffer.alloc(4)
+  count.writeUInt32LE(comments.length)
+  const vorbis = Buffer.concat([vendor, count, ...comments.map(field)])
+  const block = (type, data, last = false) => {
+    const header = Buffer.alloc(4)
+    header[0] = (last ? 0x80 : 0) | type
+    header.writeUIntBE(data.length, 1, 3)
+    return Buffer.concat([header, data])
+  }
+  const picture = Buffer.from('picture-data')
+  const audio = Buffer.from('audio-frame-data')
+  const input = Buffer.concat([
+    Buffer.from('fLaC'),
+    block(0, Buffer.alloc(34)),
+    block(4, vorbis),
+    block(6, picture, true),
+    audio,
+  ])
+  const output = rewriteFlacTagsBuffer(input, { title: '西西里', artist: '周杰伦', album: '太阳之子' })
+  const parsed = parseFlacBlocks(output)
+  const rewrittenComments = parseVorbisComment(parsed.blocks.find((item) => item.type === 4).data).comments
+  assert.ok(rewrittenComments.includes('TITLE=西西里'))
+  assert.ok(!rewrittenComments.includes('TITLE=track 02'))
+  assert.ok(rewrittenComments.includes('LYRICS=[00:01.00]歌词'))
+  assert.deepEqual(parsed.blocks.find((item) => item.type === 6).data, picture)
+  assert.deepEqual(output.subarray(parsed.audioOffset), audio)
 })
 
 test('macOS build script maps Intel architecture to the Node x64 directory', () => {

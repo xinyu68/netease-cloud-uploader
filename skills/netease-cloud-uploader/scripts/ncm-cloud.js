@@ -14,6 +14,7 @@ const { cookieToJson } = require('@neteasecloudmusicapienhanced/api/util')
 const { mergeCookieHeaders } = require('./cookie-jar')
 const { sanitizeDiagnosticText } = require('./diagnostics')
 const { inspectAudioMetadata } = require('./media-metadata')
+const { correctedCopyPath, createCorrectedFlacCopy } = require('./audio-tag-copy')
 
 console.error = (...values) => {
   const message = values.map((value) => {
@@ -555,6 +556,9 @@ async function cloudImport(fileArgument, songIdArgument, metadataOverrides = {})
   const artist = plan.artist || '未知艺术家'
   const album = plan.album || '未知专辑'
   assertMetadataPlanReady(plan)
+  if (plan.metadataRewriteRequired) {
+    throw new Error('Metadata rewrite required: cloud-import would reuse the original embedded tags. Use upload so the Skill can create and upload a corrected FLAC copy')
+  }
   const bitrate = Math.round(metadata.format.bitrate || 999000)
   const fileType = path.extname(filePath).slice(1).toLowerCase() || 'mp3'
 
@@ -795,8 +799,8 @@ async function ncmctlUpload(fileArgument) {
 async function upload(fileArgument, metadataOverrides = {}) {
   if (!fileArgument) throw new Error('Usage: node scripts/ncm-cloud.js upload <audio-file>')
   const filePath = path.resolve(fileArgument)
-  const stat = fs.statSync(filePath)
-  if (!stat.isFile()) throw new Error(`Not a file: ${filePath}`)
+  const originalStat = fs.statSync(filePath)
+  if (!originalStat.isFile()) throw new Error(`Not a file: ${filePath}`)
 
   const cookie = loadCookie()
   if (!cookie) throw new Error('Not logged in. Run: node scripts/ncm-cloud.js login')
@@ -805,17 +809,49 @@ async function upload(fileArgument, metadataOverrides = {}) {
 
   emit('upload_start', {
     file: filePath,
-    size: stat.size,
+    size: originalStat.size,
     account: profile.nickname,
   })
 
   const fileName = path.basename(filePath)
-  const md5 = await hashFile(filePath)
-  const { plan } = await inspectAudioMetadata(filePath, metadataOverrides)
+  const inspected = await inspectAudioMetadata(filePath, metadataOverrides)
+  const plan = inspected.plan
   const song = plan.title
   const artist = plan.artist || '未知艺术家'
   const album = plan.album || '未知专辑'
   assertMetadataPlanReady(plan)
+  let uploadPath = filePath
+  let preparedCopy = null
+  if (plan.metadataRewriteRequired) {
+    if (path.extname(filePath).toLowerCase() !== '.flac') {
+      throw new Error('Metadata rewrite required, but automatic lossless tag correction currently supports FLAC only')
+    }
+    const destination = correctedCopyPath(filePath, { title: song, artist, album })
+    if (fs.existsSync(destination)) {
+      uploadPath = destination
+    } else {
+      uploadPath = createCorrectedFlacCopy(filePath, { title: song, artist, album }, destination)
+    }
+    const prepared = await inspectAudioMetadata(uploadPath)
+    const durationDelta = Math.abs((prepared.metadata.format.duration || 0) - (inspected.metadata.format.duration || 0))
+    const preservedCover = prepared.plan.embeddedCover.count === plan.embeddedCover.count
+      && prepared.plan.embeddedCover.bytes === plan.embeddedCover.bytes
+    const preservedLyrics = prepared.plan.embeddedLyrics.count === plan.embeddedLyrics.count
+    if (prepared.plan.title !== song
+      || prepared.plan.artist !== artist
+      || prepared.plan.album !== album
+      || prepared.plan.metadataRewriteRequired
+      || prepared.plan.titleConflict
+      || durationDelta > 0.01
+      || !preservedCover
+      || !preservedLyrics) {
+      throw new Error(`Corrected copy verification failed: ${uploadPath}`)
+    }
+    preparedCopy = uploadPath
+    emit('upload_metadata_copy_ready', { originalFile: filePath, preparedFile: uploadPath, title: song, artist, album })
+  }
+  const stat = fs.statSync(uploadPath)
+  const md5 = await hashFile(uploadPath)
   const bitrate = 999000
   const ext = path.extname(fileName).toLowerCase() || '.mp3'
 
@@ -877,7 +913,7 @@ async function upload(fileArgument, metadataOverrides = {}) {
         'Content-Type': ext === '.flac' ? 'audio/flac' : 'audio/mpeg',
         'Content-Length': String(stat.size),
       },
-      data: fs.createReadStream(filePath),
+      data: fs.createReadStream(uploadPath),
       maxContentLength: Number.POSITIVE_INFINITY,
       maxBodyLength: Number.POSITIVE_INFINITY,
       timeout: 10 * 60 * 1000,
@@ -951,7 +987,9 @@ async function upload(fileArgument, metadataOverrides = {}) {
   const record = await waitForUploadedRecord(cookie, expectedRecord, songId)
   verifyUploadedRecord(record, expectedRecord)
   emit('upload_success', {
-    file: filePath,
+    file: uploadPath,
+    originalFile: filePath,
+    preparedCopy,
     songId,
     code: publishBody.code,
     record,
@@ -1269,8 +1307,8 @@ function commandSchema(method = '') {
     'cloud-list': { mutation: 'read', params: ['keyword?'], description: 'List compact personal cloud-drive records' },
     'match-inspect': { mutation: 'read', params: ['cloudRecordId'], description: 'Inspect one cloud record by pcId, original audio ID, or current song ID' },
     'cloud-check-v2': { mutation: 'read', params: ['file', 'catalogSongId?'], description: 'Check whether the file can be imported without binary upload' },
-    'cloud-import': { mutation: 'write', confirmation: '--yes', dryRun: true, params: ['file', 'catalogSongId'], options: ['--title=<title>', '--artist=<artist>', '--album=<album>'], description: 'Import a reusable file, preserve embedded playback metadata, and verify the resulting cloud record' },
-    upload: { mutation: 'write', confirmation: '--yes', dryRun: true, params: ['file'], options: ['--title=<title>', '--artist=<artist>', '--album=<album>'], description: 'Upload audio bytes, preserve embedded playback metadata, and verify the resulting cloud record' },
+    'cloud-import': { mutation: 'write', confirmation: '--yes', dryRun: true, params: ['file', 'catalogSongId'], description: 'Import only when embedded metadata needs no rewrite, then verify the resulting cloud record' },
+    upload: { mutation: 'write', confirmation: '--yes', dryRun: true, params: ['file'], options: ['--title=<title>', '--artist=<artist>', '--album=<album>'], description: 'Create a corrected FLAC copy when needed, upload audio bytes, and verify the resulting cloud record' },
     'match-set': { mutation: 'write', confirmation: '--yes', dryRun: true, params: ['cloudRecordId', 'catalogSongIdOrUrl'], description: 'Transactionally correct a cloud record association and verify it' },
     unmatch: { mutation: 'write', confirmation: '--yes', dryRun: true, params: ['cloudRecordId'], description: 'Remove the current public-catalog association' },
   }
@@ -1301,6 +1339,8 @@ async function fileInfo(fileArgument) {
     artist: plan.artist,
     album: plan.album,
     embeddedTitle: plan.embeddedTitle,
+    embeddedArtist: plan.embeddedArtist,
+    embeddedAlbum: plan.embeddedAlbum,
     filenameTitle: plan.filenameTitle,
     titleSource: plan.titleSource,
     placeholderTitle: plan.placeholderTitle,
@@ -1308,6 +1348,7 @@ async function fileInfo(fileArgument) {
     embeddedCover: plan.embeddedCover,
     embeddedLyrics: plan.embeddedLyrics,
     embeddedMediaFallback: plan.embeddedMediaFallback,
+    metadataRewriteRequired: plan.metadataRewriteRequired,
   })
 }
 

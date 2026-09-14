@@ -22,7 +22,9 @@ function isPlaceholderTitle(value) {
 }
 
 function inferTitleFromFilename(filePath, artist = '') {
-  let title = path.parse(filePath).name.trim()
+  let title = path.parse(filePath).name
+    .replace(/\s*\(云盘标签修正-[0-9a-f]{8}\)\s*$/i, '')
+    .trim()
   const artistName = clean(artist)
   if (artistName) {
     title = title.replace(new RegExp(`\\s*[-–—]\\s*${escapeRegExp(artistName)}\\s*$`, 'i'), '').trim()
@@ -41,8 +43,10 @@ function hasTimeline(value) {
 
 function buildMetadataPlan(filePath, common = {}, overrides = {}) {
   const embeddedTitle = clean(common.title)
-  const artist = clean(overrides.artist) || clean(common.artist)
-  const album = clean(overrides.album) || clean(common.album)
+  const embeddedArtist = clean(common.artist)
+  const embeddedAlbum = clean(common.album)
+  const artist = clean(overrides.artist) || embeddedArtist
+  const album = clean(overrides.album) || embeddedAlbum
   const filenameTitle = inferTitleFromFilename(filePath, artist)
   const placeholderTitle = isPlaceholderTitle(embeddedTitle)
   const overriddenTitle = clean(overrides.title)
@@ -76,12 +80,17 @@ function buildMetadataPlan(filePath, common = {}, overrides = {}) {
   const embeddedMediaFallback = embeddedCover.present && embeddedLyrics.present
     ? 'complete'
     : embeddedCover.present || embeddedLyrics.present ? 'partial' : 'none'
+  const metadataRewriteRequired = title !== embeddedTitle
+    || artist !== embeddedArtist
+    || album !== embeddedAlbum
 
   return {
     title,
     artist,
     album,
     embeddedTitle,
+    embeddedArtist,
+    embeddedAlbum,
     filenameTitle,
     titleSource,
     placeholderTitle,
@@ -89,6 +98,7 @@ function buildMetadataPlan(filePath, common = {}, overrides = {}) {
     embeddedCover,
     embeddedLyrics,
     embeddedMediaFallback,
+    metadataRewriteRequired,
   }
 }
 
