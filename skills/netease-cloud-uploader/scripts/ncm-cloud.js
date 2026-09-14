@@ -14,7 +14,15 @@ const { cookieToJson } = require('@neteasecloudmusicapienhanced/api/util')
 const { mergeCookieHeaders } = require('./cookie-jar')
 const { sanitizeDiagnosticText } = require('./diagnostics')
 const { inspectAudioMetadata } = require('./media-metadata')
-const { correctedCopyPath, createCorrectedFlacCopy } = require('./audio-tag-copy')
+const {
+  audioPayloadHash,
+  correctedCopyPath,
+  createCorrectedFlacCopy,
+  createMediaCopy,
+  loadMediaEdits,
+  mediaCopyPath,
+  verifyMediaEdits,
+} = require('./audio-tag-copy')
 
 console.error = (...values) => {
   const message = values.map((value) => {
@@ -70,6 +78,9 @@ const finalEvents = new Set([
   'match_set_success',
   'unmatch_success',
   'file_info',
+  'media_copy',
+  'cloud_enrich_success',
+  'cloud_delete_success',
   'schema',
   'dry_run',
 ])
@@ -796,7 +807,7 @@ async function ncmctlUpload(fileArgument) {
   }
 }
 
-async function upload(fileArgument, metadataOverrides = {}) {
+async function upload(fileArgument, metadataOverrides = {}, outputOptions = {}) {
   if (!fileArgument) throw new Error('Usage: node scripts/ncm-cloud.js upload <audio-file>')
   const filePath = path.resolve(fileArgument)
   const originalStat = fs.statSync(filePath)
@@ -823,14 +834,20 @@ async function upload(fileArgument, metadataOverrides = {}) {
   let uploadPath = filePath
   let preparedCopy = null
   if (plan.metadataRewriteRequired) {
-    if (path.extname(filePath).toLowerCase() !== '.flac') {
-      throw new Error('Metadata rewrite required, but automatic lossless tag correction currently supports FLAC only')
+    const extension = path.extname(filePath).toLowerCase()
+    if (!['.flac', '.mp3'].includes(extension)) {
+      throw new Error('Metadata rewrite required, but automatic lossless tag correction currently supports FLAC and MP3 only')
     }
-    const destination = correctedCopyPath(filePath, { title: song, artist, album })
+    const metadata = { title: song, artist, album }
+    const destination = extension === '.flac'
+      ? correctedCopyPath(filePath, metadata)
+      : mediaCopyPath(filePath, metadata, {})
     if (fs.existsSync(destination)) {
       uploadPath = destination
     } else {
-      uploadPath = createCorrectedFlacCopy(filePath, { title: song, artist, album }, destination)
+      uploadPath = extension === '.flac'
+        ? createCorrectedFlacCopy(filePath, metadata, destination)
+        : createMediaCopy(filePath, metadata, {}, destination)
     }
     const prepared = await inspectAudioMetadata(uploadPath)
     const durationDelta = Math.abs((prepared.metadata.format.duration || 0) - (inspected.metadata.format.duration || 0))
@@ -986,7 +1003,7 @@ async function upload(fileArgument, metadataOverrides = {}) {
   const expectedRecord = { md5, fileSize: stat.size, title: song }
   const record = await waitForUploadedRecord(cookie, expectedRecord, songId)
   verifyUploadedRecord(record, expectedRecord)
-  emit('upload_success', {
+  const result = {
     file: uploadPath,
     originalFile: filePath,
     preparedCopy,
@@ -994,7 +1011,10 @@ async function upload(fileArgument, metadataOverrides = {}) {
     code: publishBody.code,
     record,
     embeddedMediaFallback: plan.embeddedMediaFallback,
-  })
+    ...(outputOptions.data || {}),
+  }
+  emit(outputOptions.event || 'upload_success', result)
+  return result
 }
 
 async function main() {
@@ -1007,6 +1027,7 @@ async function main() {
     dryRun: flags.has('--dry-run'),
   }
   const metadataOverrides = parseMetadataOverrides(argv)
+  const mediaOptions = parseMediaOptions(argv)
   if (!command || command === 'help' || command === '--help') return commandSchema()
   if (command === 'schema') return commandSchema(argument)
   if (command === 'login') return login()
@@ -1028,6 +1049,19 @@ async function main() {
   if (command === 'cloud-import') {
     if (!await allowMutation('cloud-import', { file: argument, catalogSongId: secondArgument, metadataOverrides }, mutationOptions)) return
     return cloudImport(argument, secondArgument, metadataOverrides)
+  }
+  if (command === 'media-copy') {
+    if (!await allowMutation('media-copy', { file: argument, mediaOptions, metadataOverrides }, mutationOptions)) return
+    return mediaCopy(argument, mediaOptions, metadataOverrides)
+  }
+  if (command === 'cloud-enrich') {
+    if (!mediaOptions.catalogUnavailable) throw new Error('cloud-enrich requires --catalog-unavailable after catalog matching has been ruled out')
+    if (!await allowMutation('cloud-enrich', { cloudRecordId: argument, file: secondArgument, mediaOptions, metadataOverrides }, mutationOptions)) return
+    return cloudEnrich(argument, secondArgument, mediaOptions, metadataOverrides)
+  }
+  if (command === 'cloud-delete') {
+    if (!await allowMutation('cloud-delete', { cloudRecordId: argument }, mutationOptions)) return
+    return cloudDelete(argument)
   }
   if (command === 'upload') {
     if (!await allowMutation('upload', { file: argument, metadataOverrides }, mutationOptions)) return
@@ -1088,6 +1122,123 @@ function parseMetadataOverrides(argv) {
     if (flag) values[key] = flag.slice(prefix.length).trim()
   }
   return values
+}
+
+function parseMediaOptions(argv) {
+  const value = (name) => {
+    const prefix = `--${name}=`
+    const flag = argv.find((item) => item.startsWith(prefix))
+    return flag ? flag.slice(prefix.length).trim() : ''
+  }
+  return {
+    coverPath: value('cover'),
+    lyricsPath: value('lyrics'),
+    catalogUnavailable: argv.includes('--catalog-unavailable'),
+  }
+}
+
+async function buildMediaCopy(fileArgument, mediaOptions, metadataOverrides = {}) {
+  if (!fileArgument) throw new Error('Usage: node scripts/ncm-cloud.js media-copy <audio-file> --cover=<image> and/or --lyrics=<lrc> --yes')
+  const filePath = path.resolve(fileArgument)
+  const stat = fs.statSync(filePath)
+  if (!stat.isFile()) throw new Error(`Not a file: ${filePath}`)
+  const inspected = await inspectAudioMetadata(filePath, metadataOverrides)
+  const plan = inspected.plan
+  assertMetadataPlanReady(plan)
+  const metadata = {
+    title: plan.title,
+    artist: plan.artist || '未知艺术家',
+    album: plan.album || '未知专辑',
+  }
+  const edits = loadMediaEdits(mediaOptions)
+  const destination = mediaCopyPath(filePath, metadata, edits)
+  if (!fs.existsSync(destination)) createMediaCopy(filePath, metadata, edits, destination)
+  const prepared = await inspectAudioMetadata(destination)
+  const durationDelta = Math.abs((prepared.metadata.format.duration || 0) - (inspected.metadata.format.duration || 0))
+  const audioUnchanged = audioPayloadHash(filePath) === audioPayloadHash(destination)
+  const { coverApplied, lyricsApplied } = verifyMediaEdits(destination, edits)
+  if (prepared.plan.title !== metadata.title
+    || prepared.plan.artist !== metadata.artist
+    || prepared.plan.album !== metadata.album
+    || prepared.plan.titleConflict
+    || durationDelta > 0.01
+    || !audioUnchanged
+    || !coverApplied
+    || !lyricsApplied) {
+    throw new Error(`Media copy verification failed: ${destination}`)
+  }
+  return {
+    originalFile: filePath,
+    preparedFile: destination,
+    originalMd5: await hashFile(filePath),
+    preparedMd5: await hashFile(destination),
+    audioPayloadSha256: audioPayloadHash(destination),
+    audioUnchanged,
+    title: metadata.title,
+    artist: metadata.artist,
+    album: metadata.album,
+    coverChanged: Boolean(edits.cover),
+    lyricsChanged: Object.hasOwn(edits, 'lyrics'),
+    lyricsTimed: Object.hasOwn(edits, 'lyrics') && /\[(?:\d{1,3}:)?\d{1,2}[.:]\d{2,3}\]/.test(edits.lyrics),
+  }
+}
+
+async function mediaCopy(fileArgument, mediaOptions, metadataOverrides = {}) {
+  const result = await buildMediaCopy(fileArgument, mediaOptions, metadataOverrides)
+  emit('media_copy', result)
+  return result
+}
+
+async function cloudEnrich(cloudRecordIdArgument, fileArgument, mediaOptions, metadataOverrides = {}) {
+  if (!cloudRecordIdArgument || !fileArgument) {
+    throw new Error('Usage: node scripts/ncm-cloud.js cloud-enrich <cloudRecordId> <local-audio-file> --cover=<image> and/or --lyrics=<lrc> --catalog-unavailable --yes')
+  }
+  const cookie = loadCookie()
+  if (!cookie) throw new Error('Not logged in. Run: node scripts/ncm-cloud.js login')
+  const sourceItem = await findCloudRecord(cookie, cloudRecordIdArgument)
+  if (!sourceItem) throw new Error(`Cloud record not found: ${cloudRecordIdArgument}`)
+  const sourceRecord = summarizeCloudRecord(sourceItem)
+  const sourceIsMatched = sourceRecord.matchType === 'matched'
+    || (sourceRecord.catalogSongId && sourceRecord.originalAudioSongId && sourceRecord.catalogSongId !== sourceRecord.originalAudioSongId)
+  if (sourceIsMatched) {
+    throw new Error(`Cloud record ${sourceRecord.pcId} is catalog matched. Correct or remove that association before embedded-media enrichment`)
+  }
+  const localMd5 = await hashFile(path.resolve(fileArgument))
+  if (sourceRecord.md5 && sourceRecord.md5 !== localMd5) {
+    throw new Error(`Local file MD5 ${localMd5} does not match cloud record MD5 ${sourceRecord.md5}`)
+  }
+  const prepared = await buildMediaCopy(fileArgument, mediaOptions, metadataOverrides)
+  return upload(prepared.preparedFile, {}, {
+    event: 'cloud_enrich_success',
+    data: {
+      enrichment: prepared,
+      sourceCloudRecord: sourceRecord,
+      oldCloudRecordPreserved: true,
+    },
+  })
+}
+
+async function cloudDelete(cloudRecordIdArgument) {
+  if (!cloudRecordIdArgument) throw new Error('Usage: node scripts/ncm-cloud.js cloud-delete <cloudRecordId> --yes')
+  const cookie = loadCookie()
+  if (!cookie) throw new Error('Not logged in. Run: node scripts/ncm-cloud.js login')
+  const sourceItem = await findCloudRecord(cookie, cloudRecordIdArgument)
+  if (!sourceItem) throw new Error(`Cloud record not found: ${cloudRecordIdArgument}`)
+  const sourceRecord = summarizeCloudRecord(sourceItem)
+  const deleteSongId = sourceRecord.originalAudioSongId || sourceRecord.recordSongId
+  if (!deleteSongId) throw new Error(`Cloud record ${sourceRecord.pcId} has no deletable song ID`)
+  const response = await api.user_cloud_del({ cookie, id: deleteSongId, timestamp: Date.now() })
+  const body = responseBody(response) || {}
+  if (Number(body.code) !== 200) throw new Error(`Cloud delete failed: ${JSON.stringify(body)}`)
+  for (let attempt = 1; attempt <= 6; attempt += 1) {
+    const remaining = await findCloudRecord(cookie, sourceRecord.pcId)
+    if (!remaining) {
+      emit('cloud_delete_success', { deleted: sourceRecord })
+      return
+    }
+    await sleep(2000)
+  }
+  throw new Error(`Cloud delete returned success but record ${sourceRecord.pcId} is still present`)
 }
 
 function assertMetadataPlanReady(plan) {
@@ -1303,12 +1454,15 @@ function commandSchema(method = '') {
     status: { mutation: 'read', params: [], description: 'Check the saved login session' },
     logout: { mutation: 'auth', params: [], description: 'Invalidate the current Skill session and archive its encrypted local credential' },
     'file-info': { mutation: 'read', params: ['file'], description: 'Read audio identity and embedded metadata' },
+    'media-copy': { mutation: 'local-write', confirmation: '--yes', dryRun: true, params: ['file'], options: ['--cover=<jpeg-or-png>', '--lyrics=<lrc>', '--title=<title>', '--artist=<artist>', '--album=<album>'], description: 'Create and verify a FLAC or MP3 copy with changed embedded cover and/or lyrics without uploading it' },
     'catalog-search': { mutation: 'read', params: ['keywords', 'limit?'], description: 'Search public NetEase catalog candidates' },
     'cloud-list': { mutation: 'read', params: ['keyword?'], description: 'List compact personal cloud-drive records' },
     'match-inspect': { mutation: 'read', params: ['cloudRecordId'], description: 'Inspect one cloud record by pcId, original audio ID, or current song ID' },
     'cloud-check-v2': { mutation: 'read', params: ['file', 'catalogSongId?'], description: 'Check whether the file can be imported without binary upload' },
     'cloud-import': { mutation: 'write', confirmation: '--yes', dryRun: true, params: ['file', 'catalogSongId'], description: 'Import only when embedded metadata needs no rewrite, then verify the resulting cloud record' },
-    upload: { mutation: 'write', confirmation: '--yes', dryRun: true, params: ['file'], options: ['--title=<title>', '--artist=<artist>', '--album=<album>'], description: 'Create a corrected FLAC copy when needed, upload audio bytes, and verify the resulting cloud record' },
+    upload: { mutation: 'write', confirmation: '--yes', dryRun: true, params: ['file'], options: ['--title=<title>', '--artist=<artist>', '--album=<album>'], description: 'Create a corrected FLAC or MP3 copy when needed, upload audio bytes, and verify the resulting cloud record' },
+    'cloud-enrich': { mutation: 'write', confirmation: '--yes', dryRun: true, params: ['cloudRecordId', 'localAudioFile'], options: ['--cover=<jpeg-or-png>', '--lyrics=<lrc>', '--catalog-unavailable', '--title=<title>', '--artist=<artist>', '--album=<album>'], description: 'For an unmatched record with no viable catalog match, create and upload a verified embedded-media replacement while preserving the old record' },
+    'cloud-delete': { mutation: 'destructive-write', confirmation: '--yes', dryRun: true, params: ['cloudRecordId'], description: 'Delete one exact cloud record and verify its removal; use only after the user separately confirms the replacement' },
     'match-set': { mutation: 'write', confirmation: '--yes', dryRun: true, params: ['cloudRecordId', 'catalogSongIdOrUrl'], description: 'Transactionally correct a cloud record association and verify it' },
     unmatch: { mutation: 'write', confirmation: '--yes', dryRun: true, params: ['cloudRecordId'], description: 'Remove the current public-catalog association' },
   }

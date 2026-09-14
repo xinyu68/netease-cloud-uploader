@@ -1,4 +1,5 @@
 const path = require('path')
+const fs = require('fs')
 
 function clean(value) {
   return String(value || '').trim()
@@ -23,7 +24,7 @@ function isPlaceholderTitle(value) {
 
 function inferTitleFromFilename(filePath, artist = '') {
   let title = path.parse(filePath).name
-    .replace(/\s*\(云盘标签修正-[0-9a-f]{8}\)\s*$/i, '')
+    .replace(/\s*\(云盘(?:标签|媒体)修正-[0-9a-f]{8}\)\s*$/i, '')
     .trim()
   const artistName = clean(artist)
   if (artistName) {
@@ -105,9 +106,25 @@ function buildMetadataPlan(filePath, common = {}, overrides = {}) {
 async function inspectAudioMetadata(filePath, overrides = {}) {
   const metadataModule = await import('music-metadata')
   const metadata = await metadataModule.parseFile(filePath)
+  const plan = buildMetadataPlan(filePath, metadata.common, overrides)
+  if (path.extname(filePath).toLowerCase() === '.flac') {
+    const { parseFlacBlocks, parseVorbisComment } = require('./audio-tag-copy')
+    const input = fs.readFileSync(filePath)
+    const comment = parseFlacBlocks(input).blocks.find((block) => block.type === 4)
+    if (comment) {
+      const rawLyrics = parseVorbisComment(comment.data).comments
+        .filter((value) => /^(?:LYRICS|LYRIC|UNSYNCEDLYRICS|UNSYNCED LYRICS)=/i.test(value))
+        .map((value) => value.slice(value.indexOf('=') + 1))
+      if (rawLyrics.length > 0) {
+        plan.embeddedLyrics.present = true
+        plan.embeddedLyrics.count = rawLyrics.length
+        plan.embeddedLyrics.timed = rawLyrics.some(hasTimeline)
+      }
+    }
+  }
   return {
     metadata,
-    plan: buildMetadataPlan(filePath, metadata.common, overrides),
+    plan,
   }
 }
 

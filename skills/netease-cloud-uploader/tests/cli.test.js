@@ -7,7 +7,14 @@ const test = require('node:test')
 const { mergeCookieHeaders } = require('../scripts/cookie-jar')
 const { sanitizeDiagnosticText } = require('../scripts/diagnostics')
 const { buildMetadataPlan, isPlaceholderTitle } = require('../scripts/media-metadata')
-const { parseFlacBlocks, parseVorbisComment, rewriteFlacTagsBuffer } = require('../scripts/audio-tag-copy')
+const NodeID3 = require('node-id3')
+const {
+  createMediaCopy,
+  mp3AudioPayload,
+  parseFlacBlocks,
+  parseVorbisComment,
+  rewriteFlacTagsBuffer,
+} = require('../scripts/audio-tag-copy')
 
 const projectRoot = path.resolve(__dirname, '..')
 const cliPath = path.join(projectRoot, 'scripts', 'ncm-cloud.js')
@@ -119,7 +126,7 @@ test('prepared-copy suffix does not create a false title conflict', () => {
   assert.equal(plan.metadataRewriteRequired, false)
 })
 
-test('FLAC tag rewrite preserves picture metadata and audio frames', () => {
+test('FLAC tag rewrite replaces lyrics and cover while preserving audio frames', () => {
   const field = (value) => {
     const data = Buffer.from(value, 'utf8')
     const length = Buffer.alloc(4)
@@ -146,14 +153,64 @@ test('FLAC tag rewrite preserves picture metadata and audio frames', () => {
     block(6, picture, true),
     audio,
   ])
-  const output = rewriteFlacTagsBuffer(input, { title: '西西里', artist: '周杰伦', album: '太阳之子' })
+  const newPicture = Buffer.from('new-picture-data')
+  const output = rewriteFlacTagsBuffer(
+    input,
+    { title: '西西里', artist: '周杰伦', album: '太阳之子' },
+    {
+      lyrics: '[00:02.00]新歌词',
+      cover: { mime: 'image/jpeg', width: 100, height: 100, depth: 24, data: newPicture },
+    },
+  )
   const parsed = parseFlacBlocks(output)
   const rewrittenComments = parseVorbisComment(parsed.blocks.find((item) => item.type === 4).data).comments
   assert.ok(rewrittenComments.includes('TITLE=西西里'))
   assert.ok(!rewrittenComments.includes('TITLE=track 02'))
-  assert.ok(rewrittenComments.includes('LYRICS=[00:01.00]歌词'))
-  assert.deepEqual(parsed.blocks.find((item) => item.type === 6).data, picture)
+  assert.ok(rewrittenComments.includes('LYRICS=[00:02.00]新歌词'))
+  assert.ok(!rewrittenComments.includes('LYRICS=[00:01.00]歌词'))
+  const pictures = parsed.blocks.filter((item) => item.type === 6)
+  assert.equal(pictures.length, 1)
+  assert.deepEqual(pictures[0].data.subarray(-newPicture.length), newPicture)
   assert.deepEqual(output.subarray(parsed.audioOffset), audio)
+})
+
+test('MP3 media copy updates APIC and USLT without changing MPEG payload', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ncm-media-copy-'))
+  const inputPath = path.join(directory, 'song.mp3')
+  const outputPath = path.join(directory, 'song-edited.mp3')
+  const audio = Buffer.from([0xff, 0xfb, 0x90, 0x64, 1, 2, 3, 4, 5, 6])
+  const tagged = NodeID3.write({ title: '旧标题', artist: '歌手', album: '专辑' }, audio)
+  fs.writeFileSync(inputPath, tagged)
+  const cover = Buffer.from([0xff, 0xd8, 0xff, 0xd9])
+  try {
+    createMediaCopy(inputPath, { title: '新标题', artist: '歌手', album: '专辑' }, {
+      cover: { mime: 'image/jpeg', width: 0, height: 0, depth: 0, data: cover },
+      lyrics: '[00:01.00]第一句',
+    }, outputPath)
+    const result = fs.readFileSync(outputPath)
+    const tags = NodeID3.read(result)
+    assert.equal(tags.title, '新标题')
+    assert.deepEqual(tags.image.imageBuffer, cover)
+    assert.equal(tags.unsynchronisedLyrics.text, '[00:01.00]第一句')
+    assert.deepEqual(mp3AudioPayload(result), audio)
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('media-copy dry-run exposes local changes without creating files', () => {
+  const result = run(['media-copy', 'missing.flac', '--cover=cover.jpg', '--dry-run'])
+  assert.equal(result.status, 0)
+  const envelope = parseSingleEnvelope(result)
+  assert.equal(envelope.data.command, 'media-copy')
+  assert.equal(envelope.data.wouldRequest.mediaOptions.coverPath, 'cover.jpg')
+})
+
+test('cloud-delete requires separate explicit confirmation', () => {
+  const result = run(['cloud-delete', '123'])
+  assert.equal(result.status, 3)
+  const envelope = parseSingleEnvelope(result)
+  assert.equal(envelope.error.code, 'confirmation_required')
 })
 
 test('macOS build script maps Intel architecture to the Node x64 directory', () => {

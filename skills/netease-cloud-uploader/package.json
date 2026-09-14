@@ -1,6 +1,6 @@
 {
   "name": "netease-cloud-uploader-skill",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "private": true,
   "description": "Codex skill runtime for uploading local audio to NetEase Cloud Music and correcting catalog matches",
   "license": "UNLICENSED",
@@ -15,7 +15,8 @@
   "dependencies": {
     "@neteasecloudmusicapienhanced/api": "github:NeteaseCloudMusicApiEnhanced/api-enhanced#b7bf2b527c5c0b2e67515f1573a4aa40f3b556fa",
     "axios": "1.18.0",
-    "music-metadata": "11.13.0"
+    "music-metadata": "11.13.0",
+    "node-id3": "0.2.9"
   },
   "engines": {
     "node": ">=20"
