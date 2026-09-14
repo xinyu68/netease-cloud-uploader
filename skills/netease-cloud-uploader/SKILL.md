@@ -48,14 +48,14 @@ macOS 上登录优先使用随 Skill 打包的 WKWebView 原生帮助程序（`s
 1. 用 `file-info <file>` 读取 MD5、时长、标题、歌手、专辑、内嵌封面和歌词；若 `titleConflict` 为真，上传前让用户确认标题
 2. 用 `catalog-search <keywords>` 搜索公开曲库候选
 3. 按 [references/matching.md](references/matching.md) 判断是否唯一可信；不确定时向用户展示编号候选并等待选择
-4. 有目标曲库 ID 时，先用 `cloud-check-v2 <file> <catalogId>` 检查是否可导入
-5. 可复用时执行 `cloud-import <file> <catalogId> --yes`；否则执行 `upload <file> --yes`
+4. `metadataRewriteRequired` 为假且有目标曲库 ID 时，才用 `cloud-check-v2 <file> <catalogId>` 检查是否可导入
+5. 标签无需改写且可复用时执行 `cloud-import <file> <catalogId> --yes`；需要改写标签或不可复用时执行 `upload <file> --yes`
 6. 上传完成后用返回的原始音频 ID 执行 `match-inspect`；必要时用 `cloud-list <keyword>` 定位记录
 7. 自动匹配正确则完成；未匹配或错误匹配时，按纠正工作流处理
 
 用户明确要求上传该文件即授权本次上传，可在确定绝对文件路径后传 `--yes`。对写操作可先运行 `--dry-run` 核对目标。不要因为搜索到同名歌曲就推断文件一定能秒传：曲库匹配和 MD5 内容复用是两个独立判断。
 
-`track 07`、`unknown track`、`未知曲目` 等内嵌占位标题会自动改用文件名推断标题。其他有意义的标题冲突不得擅自覆盖；用户确认后可向 `upload` 或 `cloud-import` 传 `--title=<标题>`、`--artist=<歌手>`、`--album=<专辑>`。上传后必须回查云盘标题、MD5 和大小；不一致时报告云端记录已经产生但验证失败。
+`track 07`、`unknown track`、`未知曲目` 等内嵌占位标题会自动改用文件名推断标题。其他有意义的标题冲突不得擅自覆盖；用户确认后可向 `upload` 传 `--title=<标题>`、`--artist=<歌手>`、`--album=<专辑>`。FLAC 的有效元数据与内嵌标签不同时，`upload` 会在原文件旁生成带 `云盘标签修正-<摘要>` 后缀的无损副本，保留音频、封面和歌词并上传副本；不得覆盖原文件。此时不要使用 `cloud-import`，因为秒传会复用原文件的错误标签。上传后必须回查云盘标题、MD5 和大小；不一致时报告云端记录已经产生但验证失败。
 
 ## 未匹配歌曲的播放信息
 
@@ -65,7 +65,7 @@ macOS 上登录优先使用随 Skill 打包的 WKWebView 原生帮助程序（`s
 - `partial`：只包含其中一项
 - `none`：两项都没有
 
-上传任务未指定必须关联某个曲库 ID 时，允许将“上传成功、曲库未匹配、内嵌播放信息完整”报告为成功，但必须明确区分 `embedded_metadata_complete` 与 `catalog_matched`。用户明确指定曲库 ID 时，内嵌封面和歌词不能代替关联成功。不要自动修改原音频标签；如需补齐标签，应先说明会改变 MD5，并生成副本而不是覆盖原文件。
+上传任务未指定必须关联某个曲库 ID 时，允许将“上传成功、曲库未匹配、内嵌播放信息完整”报告为成功，但必须明确区分 `embedded_metadata_complete` 与 `catalog_matched`。用户明确指定曲库 ID 时，内嵌封面和歌词不能代替关联成功。标签修正副本会产生新 MD5，完成后应向用户说明原文件和实际上传文件的路径。
 
 ## 纠正匹配
 
