@@ -2,7 +2,7 @@
 
 将本地音频上传到用户自己的网易云音乐云盘，并在上传后核对云盘记录、公开曲库匹配和文件信息。匹配缺失或错误时，可以搜索候选歌曲，让用户选择后纠正关联。
 
-当前正式登录实现支持 Windows：优先使用系统 WebView2 打开网易云官方登录页；WebView2 缺失或不可用时，首次登录才按需下载固定版本的便携 Electron。安装 Skill 本身不会下载 Electron，也不会修改系统环境变量。macOS 的 WKWebView 登录尚未实现。
+当前正式登录实现支持 Windows 和 macOS：Windows 优先使用系统 WebView2，Apple Silicon Mac 优先使用随 Skill 打包的 WKWebView 帮助程序，原生引擎缺失或不可用时才按需下载固定版本的便携 Electron。Intel Mac 在对应原生帮助程序未打包时自动使用 Electron。安装 Skill 本身不会下载 Electron，也不会修改系统环境变量。
 
 ## 让 Codex 安装
 
@@ -20,7 +20,7 @@ Windows PowerShell：
 python "$env:USERPROFILE\.codex\skills\.system\skill-installer\scripts\install-skill-from-github.py" --repo xinyu68/netease-cloud-uploader --path skills/netease-cloud-uploader
 ```
 
-安装器只复制 Skill 文件，不会在安装阶段登录网易云或下载 Electron。首次实际使用时，如果尚未安装 Node 依赖，Skill 会在自身目录运行 `scripts/bootstrap.ps1`；需要 Node.js 20 或更高版本。
+安装器只复制 Skill 文件，不会在安装阶段登录网易云或下载 Electron。首次实际使用时，如果尚未安装 Node 依赖，Skill 会在自身目录运行 Windows 的 `scripts/bootstrap.ps1` 或 macOS/Linux 的 `scripts/bootstrap.sh`；需要 Node.js 20 或更高版本。
 
 ## 使用示例
 
@@ -40,7 +40,7 @@ python "$env:USERPROFILE\.codex\skills\.system\skill-installer\scripts\install-s
 
 已安装的 Skill 不会随 GitHub 仓库自动更新。需要更新时，可让 Codex 从同一 GitHub 地址重新安装最新版本。标准安装器不会覆盖已有同名目录，因此更新前应先备份需要保留的本地状态，再移除旧的 Skill 目录。
 
-登录凭证不保存在 Skill 目录或 GitHub 仓库中。Windows 登录态使用当前用户的 DPAPI 加密，存放在 `%LOCALAPPDATA%\netease-cloud-uploader\session.dpapi`。
+登录凭证不保存在 Skill 目录或 GitHub 仓库中。Windows 登录态使用当前用户的 DPAPI 加密，存放在 `%LOCALAPPDATA%\netease-cloud-uploader\session.dpapi`；macOS/Linux 使用仅当前 OS 用户可读的 0o600 base64 文件，存放在 `~/netease-cloud-uploader/session.dpapi`。
 
 ## 使用范围
 
