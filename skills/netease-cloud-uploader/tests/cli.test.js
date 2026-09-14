@@ -46,10 +46,26 @@ test('login runtime status is read-only and does not install Electron', () => {
   assert.equal(result.status, 0)
   const envelope = parseSingleEnvelope(result)
   assert.equal(envelope.ok, true)
-  const expectedEngine = process.platform === 'win32' ? 'webview2' : 'wkwebview'
+  const expectedEngine = process.platform === 'win32'
+    ? 'webview2'
+    : process.platform === 'darwin' ? 'wkwebview' : 'unavailable'
   assert.equal(envelope.data.nativeEngine, expectedEngine)
-  assert.equal(envelope.data.nativeHelperPackaged, true)
+  if (process.platform === 'win32') {
+    assert.equal(envelope.data.nativeHelperPackaged, true)
+  } else if (process.platform !== 'darwin' || !['arm64', 'x64'].includes(process.arch)) {
+    assert.equal(envelope.data.nativeHelperPackaged, false)
+  } else {
+    const helper = path.join(projectRoot, 'scripts', 'native', `macos-${process.arch}`, 'NeteaseWebViewLogin')
+    assert.equal(envelope.data.nativeHelperPackaged, fs.existsSync(helper))
+  }
   assert.equal(typeof envelope.data.electronFallbackCached, 'boolean')
+})
+
+test('macOS build script maps Intel architecture to the Node x64 directory', () => {
+  const buildScript = fs.readFileSync(path.join(projectRoot, 'scripts', 'native', 'build.sh'), 'utf8')
+  assert.match(buildScript, /x86_64\)[\s\S]*NODE_ARCH="x64"/)
+  assert.match(buildScript, /macos-\$\{NODE_ARCH\}/)
+  assert.match(buildScript, /apple-macosx12\.0/)
 })
 
 test('mutations require explicit confirmation', () => {

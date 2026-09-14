@@ -22,7 +22,7 @@ macOS 上登录优先使用随 Skill 打包的 WKWebView 原生帮助程序（`s
 
 先运行 `node scripts/ncm-cloud.js status`。Windows 上登录态由 DPAPI 加密保存；macOS 及其他平台无 DPAPI，退化为 0o600 权限的 base64 文件，仅同一 OS 用户可读。脚本和回复中不得打印 Cookie。
 
-只有在用户要求登录或上传任务确实需要重新登录时，才运行 `login`。Windows 上默认登录先实际启动系统 WebView2 并打开网易云官方登录页；仅当 WebView2 缺失、初始化失败或主页面加载失败时，才按需下载固定版本的便携 Electron 到用户本地状态目录并自动重试。macOS 上未打包 WebView2 原生帮助程序，`login` 直接走 Electron 兜底：弹出 Electron 窗口打开网易云官方登录页，用户扫码或密码登录后保存会话。Electron 不在 Skill 安装阶段下载，不修改 `PATH` 或其他系统环境变量。用户主动关闭登录窗口时停止，不得将其解释为引擎故障并下载 Electron。国内网络下 Electron 二进制首装可能拉取失败，可用 npmmirror 手动下载（见 [references/authentication.md](references/authentication.md) 的 macOS 支持小节）。
+只有在用户要求登录或上传任务确实需要重新登录时，才运行 `login`。Windows 默认先启动系统 WebView2，macOS 默认先启动与当前架构匹配的 WKWebView 帮助程序；仅当原生帮助程序缺失、初始化失败或主页面加载失败时，才按需下载固定版本的便携 Electron 到用户本地状态目录并自动重试。其他平台直接使用 Electron。登录窗口打开网易云官方页面，用户扫码、短信或密码登录后保存会话。Electron 不在 Skill 安装阶段下载，不修改 `PATH` 或其他系统环境变量。用户主动关闭登录窗口时停止，不得将其解释为引擎故障并下载 Electron。国内网络下 Electron 二进制首装可能拉取失败，可用 npmmirror 手动下载（见 [references/authentication.md](references/authentication.md) 的 macOS 支持小节）。
 
 需要诊断时运行 `login-runtime-status`；该命令不打开窗口，也不下载 Electron。不要替用户扫描、输入密码或转移登录凭据。
 

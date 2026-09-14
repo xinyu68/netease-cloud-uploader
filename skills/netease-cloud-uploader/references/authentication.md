@@ -62,7 +62,7 @@ node scripts/ncm-cloud.js login-runtime-status
 node scripts/ncm-cloud.js status
 ```
 
-`login-runtime-status` 只报告 WebView2 帮助程序和 Electron 缓存状态，不打开窗口、也不下载 Electron。随后按以下顺序排查：
+`login-runtime-status` 只报告当前平台的原生帮助程序和 Electron 缓存状态，不打开窗口、也不下载 Electron。随后按以下顺序排查：
 
 1. 区分引擎不可用、页面网络失败、用户取消和网易服务端拒绝
 2. 使用隔离的 `webview2-profile` 或 `electron-profile` 复现，不要先破坏现有凭证
@@ -87,7 +87,7 @@ WebView2 的 `OperationCanceled` 常由重定向或前端路由替换旧导航�
 macOS 上 `login` 优先使用随 Skill 打包的 WKWebView 原生帮助程序（系统 WebKit，无额外运行时下载）；仅当帮助程序缺失或返回退出码 `10`/`12` 时，才走 Electron 兜底。凭证无 DPAPI，退化为 0o600 权限的 base64 文件。代码实现：
 
 - `scripts/native/macos/LoginWindow.swift`：WKWebView 登录帮助程序，退出码语义与 Windows WebView2 帮助程序一致。
-- `scripts/native/build.sh`：在 macOS 上编译，产物输出到 `scripts/native/macos-arm64/`（按 `uname -m` 决定目录名）。
+- `scripts/native/build.sh`：在 macOS 上编译，将 `uname -m` 的 `arm64`/`x86_64` 映射为 Node 使用的 `arm64`/`x64` 目录名。
 - `scripts/ncm-cloud.js` 的 `runDpapi()`：非 win32 平台以 base64 存取 Cookie（不再抛异常），Windows 仍走 DPAPI。
 - `login()`：Windows 用 `runNativeWebViewLogin()`，macOS 用 `runNativeMacOSLogin()`（通过 `process.arch` 选择 `macos-arm64` 或 `macos-x64` 二进制）；`NCM_LOGIN_FORCE_ELECTRON=1` 可强制 Electron。
 
@@ -101,7 +101,7 @@ echo "Electron.app/Contents/MacOS/Electron" > path.txt
 node -e 'console.log(require("./index.js"))'   # 应打印 .../dist/Electron.app/Contents/MacOS/Electron
 ```
 
-完成后 `node scripts/ncm-cloud.js login-runtime-status` 的 `nativeHelperPackaged` 应为 `true`（WKWebView 已打包）；若进入 Electron 兜底，`electronFallbackCached` 应为 `true`。凭证与浏览器配置存于 `~/netease-cloud-uploader/`（macOS 无 `LOCALAPPDATA`，`stateDir` 落在用户主目录）。若担心 base64 明文存储，可改用手动 Cookie 导入兜底。
+完成后 `node scripts/ncm-cloud.js login-runtime-status` 的 `nativeHelperPackaged` 应与当前架构的 WKWebView 产物是否存在一致；若进入 Electron 兜底，`electronFallbackCached` 应为 `true`。凭证与浏览器配置存于 `~/netease-cloud-uploader/`（macOS 无 `LOCALAPPDATA`，`stateDir` 落在用户主目录）。若担心 base64 明文存储，可改用手动 Cookie 导入兜底。
 
 ## 重建 Windows 帮助程序
 

@@ -39,9 +39,12 @@ const legacyCredentialPath = path.join(legacyStateDir, 'session.dpapi')
 const webViewProfileDir = path.join(stateDir, 'webview2-profile')
 const electronProfileDir = path.join(stateDir, 'electron-profile')
 const nativeWebViewExecutable = path.join(__dirname, 'native', 'windows-x64', 'NeteaseWebViewLogin.exe')
-const nativeMacOSExecutable = process.arch === 'arm64'
-  ? path.join(__dirname, 'native', 'macos-arm64', 'NeteaseWebViewLogin')
-  : path.join(__dirname, 'native', 'macos-x64', 'NeteaseWebViewLogin')
+const nativeMacOSArchitecture = process.arch === 'arm64' || process.arch === 'x64'
+  ? process.arch
+  : null
+const nativeMacOSExecutable = nativeMacOSArchitecture
+  ? path.join(__dirname, 'native', `macos-${nativeMacOSArchitecture}`, 'NeteaseWebViewLogin')
+  : null
 const electronLoginScript = path.join(__dirname, 'electron-login.js')
 const electronVersion = '44.3.0'
 const electronRuntimeDir = path.join(stateDir, 'runtime', `electron-${electronVersion}`)
@@ -216,8 +219,8 @@ async function login() {
   // Electron remains the fallback. On other platforms Electron is used directly.
   const isWindows = process.platform === 'win32'
   const isMacOS = process.platform === 'darwin'
-  const nativeExecutable = isWindows ? nativeWebViewExecutable : nativeMacOSExecutable
-  const nativeAvailable = (isWindows || isMacOS) && fs.existsSync(nativeExecutable)
+  const nativeExecutable = isWindows ? nativeWebViewExecutable : isMacOS ? nativeMacOSExecutable : null
+  const nativeAvailable = Boolean(nativeExecutable && fs.existsSync(nativeExecutable))
   const forceElectron = process.env.NCM_LOGIN_FORCE_ELECTRON === '1'
 
   if (!nativeAvailable || forceElectron) {
@@ -253,7 +256,10 @@ function electronExecutablePath() {
   if (process.platform === 'win32') {
     return path.join(electronRuntimeDir, 'node_modules', 'electron', 'dist', 'electron.exe')
   }
-  return path.join(electronRuntimeDir, 'node_modules', 'electron', 'dist', 'Electron.app', 'Contents', 'MacOS', 'Electron')
+  if (process.platform === 'darwin') {
+    return path.join(electronRuntimeDir, 'node_modules', 'electron', 'dist', 'Electron.app', 'Contents', 'MacOS', 'Electron')
+  }
+  return path.join(electronRuntimeDir, 'node_modules', 'electron', 'dist', 'electron')
 }
 
 function runNativeWebViewLogin() {
@@ -283,10 +289,11 @@ function runNativeWebViewLogin() {
 }
 
 function runNativeMacOSLogin() {
-  if (!fs.existsSync(nativeMacOSExecutable)) {
+  if (!nativeMacOSExecutable || !fs.existsSync(nativeMacOSExecutable)) {
     return { status: null, reason: 'The packaged WKWebView login helper is missing' }
   }
   emit('login_engine_start', { engine: 'wkwebview' })
+  const credentialMtimeBefore = credentialModifiedAt()
   const result = spawnSync(nativeMacOSExecutable, [], {
     encoding: 'utf8',
     env: { ...process.env, NCM_STATE_DIR: stateDir },
@@ -302,10 +309,24 @@ function runNativeMacOSLogin() {
     result.error?.message,
     result.stderr,
   ].filter(Boolean).join('\n'))
+  let status = result.status
+  // 兼容修复前随仓库发布的 arm64 帮助程序：旧程序使用 terminate(_:)，
+  // 导航失败或用户关闭窗口时也可能返回 0。未写入新凭证时，根据诊断恢复退出语义。
+  if (status === 0 && credentialMtimeBefore === credentialModifiedAt()) {
+    status = diagnostic.includes('wkwebview_navigation_failed') ? 12 : 11
+  }
   return {
-    status: result.status,
-    reason: result.error?.message || reasons[result.status] || `WKWebView helper exited with code ${result.status ?? 'unknown'}`,
+    status,
+    reason: result.error?.message || reasons[status] || `WKWebView helper exited with code ${status ?? 'unknown'}`,
     ...(diagnostic ? { diagnostic } : {}),
+  }
+}
+
+function credentialModifiedAt() {
+  try {
+    return fs.statSync(credentialPath).mtimeMs
+  } catch {
+    return null
   }
 }
 
@@ -386,12 +407,12 @@ async function finishBrowserLogin(method) {
 function loginRuntimeStatus() {
   const isWindows = process.platform === 'win32'
   const isMacOS = process.platform === 'darwin'
-  const nativeExecutable = isWindows ? nativeWebViewExecutable : nativeMacOSExecutable
+  const nativeExecutable = isWindows ? nativeWebViewExecutable : isMacOS ? nativeMacOSExecutable : null
   const nativeEngine = isWindows ? 'webview2' : isMacOS ? 'wkwebview' : 'unavailable'
   emit('login_runtime_status', {
     platform: process.platform,
     nativeEngine,
-    nativeHelperPackaged: (isWindows || isMacOS) && fs.existsSync(nativeExecutable),
+    nativeHelperPackaged: Boolean(nativeExecutable && fs.existsSync(nativeExecutable)),
     electronFallbackVersion: electronVersion,
     electronFallbackCached: fs.existsSync(electronExecutablePath()),
     electronRuntimeDir,

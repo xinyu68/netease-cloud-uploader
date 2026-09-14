@@ -101,14 +101,15 @@ private final class LoginController: NSObject, WKNavigationDelegate {
                 self.exitCode = 0
                 self.cookieTimer?.invalidate()
                 DispatchQueue.main.async {
-                    NSApp.stopModal()
-                    NSApp.terminate(nil)
+                    // 仅停止事件循环，由 main 中的 exit(code) 返回约定退出码。
+                    // terminate(_:) 会直接结束应用，失败分支可能因此丢失 11/12/13。
+                    NSApp.stop(nil)
                 }
             } catch {
                 self.exitCode = 13
                 self.cookieTimer?.invalidate()
                 DispatchQueue.main.async {
-                    NSApp.terminate(nil)
+                    NSApp.stop(nil)
                 }
             }
         }
@@ -166,7 +167,7 @@ private final class LoginController: NSObject, WKNavigationDelegate {
             webView.load(URLRequest(url: loginURL))
         } else {
             exitCode = 12
-            DispatchQueue.main.async { NSApp.terminate(nil) }
+            DispatchQueue.main.async { NSApp.stop(nil) }
         }
     }
 }
@@ -175,7 +176,7 @@ extension LoginController: NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         if !credentialSaved && exitCode == 11 {
             cookieTimer?.invalidate()
-            DispatchQueue.main.async { NSApp.terminate(nil) }
+            DispatchQueue.main.async { NSApp.stop(nil) }
         }
     }
 }
