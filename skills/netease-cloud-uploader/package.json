@@ -1,8 +1,8 @@
 {
   "name": "netease-cloud-uploader-skill",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "private": true,
-  "description": "Codex skill runtime for uploading local audio to NetEase Cloud Music and correcting catalog matches",
+  "description": "Codex skill runtime for managing uploads and exact-original downloads in a user's NetEase Cloud Music drive",
   "license": "UNLICENSED",
   "bin": {
     "ncm-cloud": "scripts/ncm-cloud.js"

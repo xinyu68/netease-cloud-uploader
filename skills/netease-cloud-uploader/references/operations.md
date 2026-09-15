@@ -9,6 +9,7 @@ node scripts/ncm-cloud.js logout
 node scripts/ncm-cloud.js file-info "D:\Music\song.mp3"
 node scripts/ncm-cloud.js catalog-search "歌名 歌手" 10
 node scripts/ncm-cloud.js cloud-list "歌名"
+node scripts/ncm-cloud.js cloud-download <cloudRecordId> "D:\目标目录" --yes
 node scripts/ncm-cloud.js match-inspect <cloudRecordId>
 node scripts/ncm-cloud.js cloud-check-v2 "D:\Music\song.mp3" <catalogId>
 node scripts/ncm-cloud.js upload "D:\Music\song.mp3" --dry-run
@@ -57,6 +58,12 @@ node scripts/ncm-cloud.js unmatch <cloudRecordId> --yes
 内嵌封面和歌词可以改善未匹配歌曲的播放体验，但不会产生公开曲库 ID、评论或歌曲主页。若同 MD5 已被网易服务端保存为错误标题，秒传可能继续复用旧元数据；修复需要生成标签正确且 MD5 不同的副本，完整上传并回查成功后，才能在用户授权下删除旧记录。
 
 封面或歌词修复同样产生新 MD5。`cloud-enrich` 只接受未匹配记录，并要求 `--catalog-unavailable` 表示调用方已经排除可信曲库候选；它不会自动删除旧记录。新记录在网易客户端显示无误且用户单独确认后，才用旧记录的稳定 `pcId` 执行 `cloud-delete`。删除接口使用原始音频歌曲 ID，脚本按 `pcId` 回查记录确实消失。
+
+## 云盘原文件下载
+
+`cloud-download` 必须先通过当前账号的 `user_cloud` 列表把 `pcId`、原始音频 ID 或当前记录 ID 解析为私有云盘记录，再使用原始音频 ID 申请下载链接。不得把未出现在当前账号云盘列表中的公开歌曲 ID 当作下载目标。
+
+下载先写入最终路径同目录的 `.part-*` 临时文件，计算实际字节数和 MD5；只有两者均与 `privateCloud.fileSize` 和 `privateCloud.md5` 相等时才改名。目标文件已存在时停止，不覆盖、不自动改名。失败或发现转码内容时删除临时文件。输出可包含端点类型、音质级别、格式和校验结果，但不得包含 Cookie 或有时效的签名 URL。
 
 ## 退出码
 
