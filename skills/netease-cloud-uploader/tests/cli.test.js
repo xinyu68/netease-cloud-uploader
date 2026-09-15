@@ -41,6 +41,7 @@ test('help returns a versioned JSON command schema', () => {
   assert.equal(envelope.ok, true)
   assert.equal(envelope.meta.schema_version, '1.0.0')
   assert.ok(envelope.data.commands['match-set'])
+  assert.ok(envelope.data.commands['cloud-download'])
 })
 
 test('schema progressively discloses one command', () => {
@@ -211,6 +212,22 @@ test('cloud-delete requires separate explicit confirmation', () => {
   assert.equal(result.status, 3)
   const envelope = parseSingleEnvelope(result)
   assert.equal(envelope.error.code, 'confirmation_required')
+})
+
+test('cloud-download requires explicit local-write confirmation', () => {
+  const result = run(['cloud-download', '123', os.tmpdir()])
+  assert.equal(result.status, 3)
+  const envelope = parseSingleEnvelope(result)
+  assert.equal(envelope.error.code, 'confirmation_required')
+})
+
+test('cloud-download dry-run exposes the selected record and destination without authentication', () => {
+  const result = run(['cloud-download', '123', os.tmpdir(), '--dry-run'])
+  assert.equal(result.status, 0)
+  const envelope = parseSingleEnvelope(result)
+  assert.equal(envelope.data.command, 'cloud-download')
+  assert.equal(envelope.data.wouldRequest.cloudRecordId, '123')
+  assert.equal(envelope.data.wouldRequest.destination, os.tmpdir())
 })
 
 test('macOS build script maps Intel architecture to the Node x64 directory', () => {

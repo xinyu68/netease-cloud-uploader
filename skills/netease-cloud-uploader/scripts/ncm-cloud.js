@@ -5,6 +5,8 @@ const os = require('os')
 const path = require('path')
 const crypto = require('crypto')
 const { spawnSync } = require('child_process')
+const { Transform } = require('stream')
+const { pipeline } = require('stream/promises')
 const { default: axios } = require('axios')
 process.env.DOTENV_CONFIG_QUIET = 'true'
 const api = require('@neteasecloudmusicapienhanced/api')
@@ -66,6 +68,7 @@ const finalEvents = new Set([
   'logged_out',
   'login_runtime_status',
   'cloud_list',
+  'cloud_download_success',
   'cloud_raw',
   'cloud_check_v2',
   'cloud_import',
@@ -522,6 +525,150 @@ async function cloudList(keyword = '') {
     })
     .map((item) => summarizeCloudRecord(item))
   emit('cloud_list', { count: songs.length, songs })
+}
+
+function safeCloudFileName(record) {
+  const fallback = `${record.songName || 'cloud-audio'}${path.extname(record.fileName || '') || '.mp3'}`
+  const baseName = path.basename(record.fileName || fallback)
+  const sanitized = baseName.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').replace(/[. ]+$/g, '')
+  return sanitized || fallback
+}
+
+function resolveCloudDownloadPath(destinationArgument, record) {
+  if (!destinationArgument) {
+    throw new Error('Usage: node scripts/ncm-cloud.js cloud-download <cloudRecordId> <existing-directory-or-file-path> --yes')
+  }
+  const destination = path.resolve(destinationArgument)
+  const outputPath = fs.existsSync(destination) && fs.statSync(destination).isDirectory()
+    ? path.join(destination, safeCloudFileName(record))
+    : destination
+  const parent = path.dirname(outputPath)
+  if (!fs.existsSync(parent) || !fs.statSync(parent).isDirectory()) {
+    throw new Error(`Download destination directory does not exist: ${parent}`)
+  }
+  if (fs.existsSync(outputPath)) throw new Error(`Download destination already exists: ${outputPath}`)
+  return outputPath
+}
+
+function downloadUrlData(response) {
+  const body = responseBody(response) || {}
+  const data = Array.isArray(body.data) ? body.data[0] : body.data
+  return data && typeof data === 'object' ? data : null
+}
+
+async function requestCloudDownloadCandidates(cookie, songId) {
+  const requestGroups = [
+    [
+      ['download', 'hires', () => api.song_download_url_v1({ cookie, id: songId, level: 'hires', timestamp: Date.now() })],
+      ['download', 'lossless', () => api.song_download_url_v1({ cookie, id: songId, level: 'lossless', timestamp: Date.now() })],
+    ],
+    [
+      ['player', 'hires', () => api.song_url_v1({ cookie, id: songId, level: 'hires', timestamp: Date.now() })],
+      ['player', 'lossless', () => api.song_url_v1({ cookie, id: songId, level: 'lossless', timestamp: Date.now() })],
+    ],
+  ]
+  const candidates = []
+  const seenUrls = new Set()
+  for (const requests of requestGroups) {
+    for (const [endpoint, level, request] of requests) {
+      try {
+        const data = downloadUrlData(await withRetry(request))
+        if (!data?.url || seenUrls.has(data.url)) continue
+        seenUrls.add(data.url)
+        candidates.push({ endpoint, level, url: data.url, type: data.type || null, reportedSize: data.size || null, reportedMd5: data.md5 || null })
+      } catch (error) {
+        emit('cloud_download_url_unavailable', { endpoint, level, code: error?.body?.code || error?.code || null })
+      }
+    }
+    if (candidates.length > 0) break
+  }
+  return candidates
+}
+
+async function downloadCandidate(candidate, temporaryPath) {
+  const hash = crypto.createHash('md5')
+  let size = 0
+  const response = await axios.get(candidate.url, {
+    responseType: 'stream',
+    timeout: 10 * 60 * 1000,
+    proxy: false,
+    maxContentLength: Number.POSITIVE_INFINITY,
+    maxBodyLength: Number.POSITIVE_INFINITY,
+  })
+  const observer = new Transform({
+    transform(chunk, encoding, callback) {
+      size += chunk.length
+      hash.update(chunk)
+      callback(null, chunk)
+    },
+  })
+  await pipeline(response.data, observer, fs.createWriteStream(temporaryPath, { flags: 'wx' }))
+  return {
+    size,
+    md5: hash.digest('hex'),
+    contentType: response.headers['content-type'] || null,
+  }
+}
+
+async function cloudDownload(cloudRecordId, destinationArgument) {
+  if (!cloudRecordId) {
+    throw new Error('Usage: node scripts/ncm-cloud.js cloud-download <cloudRecordId> <existing-directory-or-file-path> --yes')
+  }
+  const cookie = loadCookie()
+  if (!cookie) throw new Error('Not logged in. Run: node scripts/ncm-cloud.js login')
+  const { profile } = await verifyCookie(cookie)
+  if (!profile?.userId) throw new Error('Saved session has expired. Run login again')
+
+  const record = summarizeCloudRecord(await findCloudRecord(cookie, cloudRecordId))
+  if (!record.pcId || !record.originalAudioSongId || !record.md5 || !record.fileSize) {
+    throw new Error('Selected cloud record does not expose the identity needed for an exact download')
+  }
+  const outputPath = resolveCloudDownloadPath(destinationArgument, record)
+  const candidates = await requestCloudDownloadCandidates(cookie, record.originalAudioSongId)
+  if (candidates.length === 0) throw new Error('NetEase did not return a downloadable URL for this personal cloud record')
+
+  const observations = []
+  for (let index = 0; index < candidates.length; index += 1) {
+    if (fs.existsSync(outputPath)) throw new Error(`Download destination already exists: ${outputPath}`)
+    const temporaryPath = `${outputPath}.part-${process.pid}-${Date.now()}-${index}`
+    try {
+      emit('cloud_download_start', {
+        pcId: record.pcId,
+        originalAudioSongId: record.originalAudioSongId,
+        endpoint: candidates[index].endpoint,
+        level: candidates[index].level,
+      })
+      const downloaded = await downloadCandidate(candidates[index], temporaryPath)
+      const exact = downloaded.md5.toLowerCase() === record.md5.toLowerCase()
+        && Number(downloaded.size) === Number(record.fileSize)
+      observations.push({
+        endpoint: candidates[index].endpoint,
+        level: candidates[index].level,
+        type: candidates[index].type,
+        size: downloaded.size,
+        md5: downloaded.md5,
+        contentType: downloaded.contentType,
+        exact,
+      })
+      if (!exact) {
+        fs.rmSync(temporaryPath, { force: true })
+        continue
+      }
+      if (fs.existsSync(outputPath)) throw new Error(`Download destination already exists: ${outputPath}`)
+      fs.renameSync(temporaryPath, outputPath)
+      emit('cloud_download_success', {
+        file: outputPath,
+        account: profile.nickname,
+        record,
+        verification: { exactOriginal: true, size: downloaded.size, md5: downloaded.md5 },
+        source: { endpoint: candidates[index].endpoint, level: candidates[index].level, type: candidates[index].type },
+      })
+      return
+    } finally {
+      if (fs.existsSync(temporaryPath)) fs.rmSync(temporaryPath, { force: true })
+    }
+  }
+  throw new Error(`NetEase returned downloadable audio, but none matched the cloud record's original MD5 and size: ${JSON.stringify(observations)}`)
 }
 
 async function cloudCheckV2(fileArgument, songIdArgument) {
@@ -1037,6 +1184,10 @@ async function main() {
   if (command === 'file-info') return fileInfo(argument)
   if (command === 'catalog-search') return catalogSearch(argument, secondArgument)
   if (command === 'cloud-list') return cloudList(argument || '')
+  if (command === 'cloud-download') {
+    if (!await allowMutation('cloud-download', { cloudRecordId: argument, destination: secondArgument }, mutationOptions)) return
+    return cloudDownload(argument, secondArgument)
+  }
   if (command === 'cloud-raw') return cloudRaw(argument || '')
   if (command === 'match-inspect') return matchInspect(argument)
   if (command === 'match-set') return matchSet(argument, secondArgument, mutationOptions)
@@ -1438,7 +1589,9 @@ async function allowMutation(command, wouldRequest, options) {
     ok: false,
     error: {
       code: 'confirmation_required',
-      message: `The ${command} command changes NetEase Cloud Music state. Pass --yes after the user confirms the exact target.`,
+      message: command === 'cloud-download' || command === 'media-copy'
+        ? `The ${command} command writes a local file. Pass --yes after the user confirms the exact target.`
+        : `The ${command} command changes NetEase Cloud Music state. Pass --yes after the user confirms the exact target.`,
       retryable: false,
     },
     meta: { schema_version: schemaVersion },
@@ -1457,6 +1610,7 @@ function commandSchema(method = '') {
     'media-copy': { mutation: 'local-write', confirmation: '--yes', dryRun: true, params: ['file'], options: ['--cover=<jpeg-or-png>', '--lyrics=<lrc>', '--title=<title>', '--artist=<artist>', '--album=<album>'], description: 'Create and verify a FLAC or MP3 copy with changed embedded cover and/or lyrics without uploading it' },
     'catalog-search': { mutation: 'read', params: ['keywords', 'limit?'], description: 'Search public NetEase catalog candidates' },
     'cloud-list': { mutation: 'read', params: ['keyword?'], description: 'List compact personal cloud-drive records' },
+    'cloud-download': { mutation: 'local-write', confirmation: '--yes', dryRun: true, params: ['cloudRecordId', 'existingDirectoryOrFilePath'], description: 'Download one record from the current account personal cloud drive and keep it only when MD5 and size match the original record' },
     'match-inspect': { mutation: 'read', params: ['cloudRecordId'], description: 'Inspect one cloud record by pcId, original audio ID, or current song ID' },
     'cloud-check-v2': { mutation: 'read', params: ['file', 'catalogSongId?'], description: 'Check whether the file can be imported without binary upload' },
     'cloud-import': { mutation: 'write', confirmation: '--yes', dryRun: true, params: ['file', 'catalogSongId'], description: 'Import only when embedded metadata needs no rewrite, then verify the resulting cloud record' },
